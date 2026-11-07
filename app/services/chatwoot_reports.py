@@ -55,3 +55,32 @@ class ChatwootReports:
         inc, out = _int(d.get("incoming_messages_count")), _int(d.get("outgoing_messages_count"))
         return {"conversations": _int(d.get("conversations_count")), "incoming_messages": inc, "outgoing_messages": out,
                 "messages": inc + out, "resolutions": _int(d.get("resolutions_count"))}
+
+
+    def inboxes(self, account_id: int) -> list[dict]:
+        """The account's inboxes, as Chatwoot knows them. [Check] `GET /api/v1/accounts/{id}/inboxes` and its channel_type values."""
+        if not self.configured:
+            raise ReportError("not_configured")
+        try:
+            r = httpx.get(f"{self.base}/api/v1/accounts/{account_id}/inboxes", headers={"api_access_token": self.token}, timeout=self.timeout)
+        except httpx.HTTPError as e:
+            raise ReportError(f"unreachable:{type(e).__name__}") from e
+        if r.status_code in (401, 403):
+            raise ReportError("reporter_not_in_account")
+        if r.status_code >= 400:
+            raise ReportError(f"http_{r.status_code}")
+        try:
+            rows = r.json().get("payload", [])
+        except (ValueError, AttributeError) as e:
+            raise ReportError("bad_payload") from e
+        out = []
+        for i in rows if isinstance(rows, list) else []:
+            if isinstance(i, dict) and i.get("id"):
+                out.append({"id": int(i["id"]), "name": str(i.get("name") or "Inbox"), "type": _TYPE.get(str(i.get("channel_type", "")), "other"),
+                            "phone_number": i.get("phone_number") or None})
+        return out
+
+
+_TYPE = {"Channel::Whatsapp": "whatsapp", "Channel::FacebookPage": "messenger", "Channel::Instagram": "instagram",
+         "Channel::Telegram": "telegram", "Channel::Email": "email", "Channel::WebWidget": "web_chat", "Channel::TiktokChannel": "tiktok",
+         "Channel::Tiktok": "tiktok"}

@@ -15,6 +15,10 @@ class FakeReports:
         self.calls, self.fail_inbox = [], set()
 
     configured = True
+    found = []
+
+    def inboxes(self, account_id):
+        return self.found
 
     def summary(self, account_id, since, until, inbox_id=None):
         self.calls.append((account_id, inbox_id))
@@ -171,3 +175,12 @@ def test_parse_is_tolerant_but_fails_closed():
     assert inv.status == "paid" and inv.currency == "NGN" and inv.lines[0].line_id == "4" and inv.lines[0].subtotal == Decimal(10)
     with pytest.raises(WisecpError):
         parse_invoice({"data": "nope"})
+
+
+def test_unregistered_chatwoot_inboxes_are_shown_too(client, cw, reports):
+    tid = mk_tenant(client, cw)
+    add_channel(client, tid)                                          # inbox 7 is registered
+    reports.found = [{"id": 7, "name": "dup", "type": "whatsapp", "phone_number": None},
+                     {"id": 9, "name": "Website", "type": "web_chat", "phone_number": None}]
+    chans = client.get(f"/admin/tenants/{tid}/stats?ranges=month", headers=H(ADMIN)).json()["ranges"]["month"]["channels"]
+    assert [c["type"] for c in chans] == ["whatsapp", "web_chat"] and chans[1]["messages"] == 15      # 7 is not listed twice
