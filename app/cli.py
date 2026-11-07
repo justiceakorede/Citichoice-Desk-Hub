@@ -9,7 +9,7 @@
   wisecp-invoice ID        show how the hub reads a WiseCP invoice and what it WOULD credit (changes nothing)
   topup-invoice ID         read a WiseCP invoice and credit its Desk top-up lines (idempotent; use after a missed hook)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
-  fx-sync           pull current exchange rates from WiseCP and store them (run on a schedule, e.g. hourly)
+  create-tenant SERVICE_ID --name N --email E --plan P --currency C [--chatwoot-account ID] [--chatwoot-user ID] [--no-owner-login]\n      create a hub tenant for an EXISTING WiseCP service (adopts an existing Chatwoot workspace when --chatwoot-account is given)\n  fx-sync           pull current exchange rates from WiseCP and store them (run on a schedule, e.g. hourly)
   seed-plans        load ISO currencies and the default plans (development only; migrations seed production)
   enable-currencies CODE [CODE ...]   allow billing in these ISO currencies (staff decision, audited)
 """
@@ -41,6 +41,10 @@ def main():
     w = sub.add_parser("worker"); w.add_argument("--once", action="store_true")
     sub.add_parser("escalate"); sub.add_parser("seed-plans")
     sub.add_parser("fx-sync")
+    ct = sub.add_parser("create-tenant"); ct.add_argument("service_id")
+    ct.add_argument("--name", required=True); ct.add_argument("--email", required=True); ct.add_argument("--plan", required=True)
+    ct.add_argument("--currency", required=True); ct.add_argument("--chatwoot-account", type=int); ct.add_argument("--chatwoot-user", type=int)
+    ct.add_argument("--no-owner-login", action="store_true")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
     wi = sub.add_parser("wisecp-invoice"); wi.add_argument("invoice_id")
     ti = sub.add_parser("topup-invoice"); ti.add_argument("invoice_id")
@@ -113,6 +117,24 @@ def main():
                 raise SystemExit(f"fx-sync FAILED ({e.code}): {e}")
             ts.audit(db, "cli:fx-sync", "fx.sync", None, res); db.commit()
             print("fx-sync:", res)
+        elif a.cmd == "create-tenant":
+            from .models import Currency, Wallet
+            from .services import entitlements as ent
+            if db.scalar(select(Tenant).where(Tenant.wisecp_service_id == a.service_id)):
+                raise SystemExit(f"a tenant for WiseCP service {a.service_id} already exists")
+            cur = db.get(Currency, a.currency.upper())
+            if not cur or cur.exponent is None or not cur.billing_enabled:
+                raise SystemExit(f"{a.currency} is not enabled for billing (python -m app.cli enable-currencies {a.currency})")
+            plan = ent.get_plan(db, a.plan)
+            t = Tenant(wisecp_service_id=a.service_id, name=a.name, slug=ts.slugify(a.name), owner_email=a.email, status="pending",
+                       billing_currency=cur.code, chatwoot_account_id=a.chatwoot_account, chatwoot_user_id=a.chatwoot_user)
+            db.add(t); db.flush()
+            ent.create_entitlement(db, t, plan, {})
+            db.add(Wallet(tenant_id=t.id, currency=cur.code, balance_micro=0))
+            jobs.enqueue(db, t.id, "provision_tenant", f"provision:{t.id}", {"create_owner_user": not a.no_owner_login})
+            ts.audit(db, "cli", "tenant.create", t.id, {"plan": plan.code, "adopted_account": bool(a.chatwoot_account), "entitlement": ent.snapshot(t)})
+            db.commit()
+            print(f"tenant {t.id} ({t.slug}) created for WiseCP service {a.service_id}; the worker will provision/adopt it")
         elif a.cmd == "add-reporter":
             from .services.chatwoot import ProvisioningError
             cw = get_chatwoot()
