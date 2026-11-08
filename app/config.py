@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Customer stats (Chatwoot reports). A dedicated "hub-reporter" Chatwoot user, added as an administrator of every tenant
     # account, supplies this token. Platform tokens cannot read account reports.
     chatwoot_report_token: str = ""
+    price_display_market: str = "NG"    # market whose per-message prices the customer Overview shows (falls back to the default market *)
     stats_cache_seconds: int = 120       # Chatwoot report results are cached this long per tenant and range
     stats_http_timeout: float = 8.0
 

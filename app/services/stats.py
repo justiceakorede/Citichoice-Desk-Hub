@@ -102,6 +102,17 @@ def tenant_stats(db: Session, t: Tenant, ranges: list[str], rep: ChatwootReports
     wallet = {"currency": cur, "balance": w["balance"], "available": money.format_micro(w["available_micro"], cur),
               "receivable": w["receivable"], "owes": w["receivable_micro"] > 0,
               "spend_30d": money.format_micro(w["spend_30d_micro"], cur), "alert": w["alert"]}
+    live = {"channels": len(chans), "seats": None}              # what the workspace really has, not only what staff registered
+    if t.chatwoot_account_id and rep.configured and hasattr(rep, "agents"):
+        hit = _cache.get(("agents", t.id))
+        if hit and hit[0] > time.monotonic():
+            live["seats"] = hit[1]["n"]
+        else:
+            try:
+                live["seats"] = rep.agents(t.chatwoot_account_id)
+                _cache[("agents", t.id)] = (time.monotonic() + get_settings().stats_cache_seconds, {"n": live["seats"]})
+            except ReportError:
+                pass
     out_ranges = {}
     for name in ranges:
         since, until = range_bounds(name)
@@ -114,7 +125,7 @@ def tenant_stats(db: Session, t: Tenant, ranges: list[str], rep: ChatwootReports
                             "whatsapp": _whatsapp_billing(db, t, since, until, cur)}
     return {"tenant_id": t.id, "generated_at": now().isoformat(), "currency": cur, "wallet": wallet,
             "message_prices": message_prices(db, t), "ai_replies": cv["ai_replies"], "seats": cv["seats"], "channels_plan": cv["channels"], "status": t.status,
-            "ranges": out_ranges}
+            "live_usage": live, "ranges": out_ranges}
 
 
 def reports_for(t: Tenant, base: ChatwootReports, cw) -> ChatwootReports:
@@ -151,9 +162,14 @@ def message_prices(db: Session, t: Tenant) -> dict:
     w = wl.get_wallet(db, t.id)
     out = {}
     for cat in rates.CATEGORIES:
-        try:
-            snap = pricing.price(db, t, w, cat, None, now())
-        except pricing.PricingError:
+        snap = None
+        for market in (get_settings().price_display_market or None, None):
+            try:
+                snap = pricing.price(db, t, w, cat, market, now())
+                break
+            except pricing.PricingError:
+                continue
+        if snap is None:
             continue
         out[cat] = {"per_message": _unit(snap.unit_charge_micro, w.currency), "free": snap.unit_charge_micro == 0}
     return out

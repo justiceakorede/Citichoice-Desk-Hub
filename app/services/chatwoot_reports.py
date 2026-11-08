@@ -83,6 +83,22 @@ class ChatwootReports:
                             "phone_number": i.get("phone_number") or None})
         return out
 
+    def agents(self, account_id: int) -> int:
+        """Number of agents in the account. [Check] `GET /api/v1/accounts/{id}/agents` returns a JSON list."""
+        if not self.configured:
+            raise ReportError("not_configured")
+        try:
+            r = httpx.get(f"{self.base}/api/v1/accounts/{account_id}/agents", headers={"api_access_token": self.token}, timeout=self.timeout)
+        except httpx.HTTPError as e:
+            raise ReportError(f"unreachable:{type(e).__name__}") from e
+        if r.status_code >= 400:
+            raise ReportError(f"http_{r.status_code}")
+        try:
+            rows = r.json()
+        except ValueError as e:
+            raise ReportError("bad_payload") from e
+        return len(rows) if isinstance(rows, list) else 0
+
 
 _TYPE = {"Channel::Whatsapp": "whatsapp", "Channel::FacebookPage": "messenger", "Channel::Instagram": "instagram",
          "Channel::Telegram": "telegram", "Channel::Email": "email", "Channel::WebWidget": "web_chat", "Channel::TiktokChannel": "tiktok",
