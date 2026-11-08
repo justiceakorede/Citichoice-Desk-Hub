@@ -39,7 +39,7 @@ def send_check(body: SendCheck, key: ApiKey = Depends(internal_key), db: Session
     w = db.get(Wallet, t.id)
     if t.status != "active":
         return {"allow": False, "reason": "tenant_suspended"}
-    if body.category == "service":     # free service window: allowed even with an empty wallet
+    if body.category == "service" and get_settings().service_messages_free:     # free service window: allowed even with an empty wallet
         return {"allow": True, "reason": "service_window"}
     at = now()
     try:
@@ -81,7 +81,7 @@ def reserve_funds(body: ReserveBody, key: ApiKey = Depends(internal_key), db: Se
     t = _tenant(db, key, body.tenant_id)
     if t.status != "active":
         return {"allowed": False, "reason": "tenant_suspended"}
-    if body.category == "service":
+    if body.category == "service" and get_settings().service_messages_free:
         return {"allowed": True, "reservation_id": None, "amount_micro": 0, "reason": "service_window"}
     w = db.get(Wallet, t.id)
     at = now()
@@ -156,7 +156,7 @@ def ingest_usage(ev: UsageEvent, key: ApiKey = Depends(internal_key), db: Sessio
             raise HTTPException(409, {"code": "event_conflict", "message": "message id already recorded for another tenant"})
         return {"recorded": False, "billed": existing.charge_micro > 0, "charge_micro": existing.charge_micro, "balance_micro": w.balance_micro}
 
-    billable = ev.billed and ev.category != "service"
+    billable = ev.billed and (ev.category != "service" or not get_settings().service_messages_free)
     snap = None
     cost = fee = buf = charge = 0
     if billable:

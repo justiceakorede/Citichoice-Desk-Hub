@@ -113,6 +113,8 @@ def tenant_stats(db: Session, t: Tenant, ranges: list[str], rep: ChatwootReports
                 _cache[("agents", t.id)] = (time.monotonic() + get_settings().stats_cache_seconds, {"n": live["seats"]})
             except ReportError:
                 pass
+    if live["seats"] is not None and t.seats_used != live["seats"]:
+        t.seats_used = live["seats"]                          # keeps the staff UI in step with the real workspace
     out_ranges = {}
     for name in ranges:
         since, until = range_bounds(name)

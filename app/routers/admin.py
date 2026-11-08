@@ -613,6 +613,7 @@ def tenant_stats(tid: str, ranges: str = Query("month,30d", description="comma l
     if not wanted or len(wanted) > 4 or any(r not in stats_svc.RANGES for r in wanted):
         raise HTTPException(422, {"code": "bad_ranges", "message": f"ranges must be a subset of {list(stats_svc.RANGES)}"})
     out = stats_svc.tenant_stats(db, t, list(dict.fromkeys(wanted)), stats_svc.reports_for(t, rep, cw))
+    db.commit()
     for r in out["ranges"].values():                       # the customer sees what they were charged, never how it was built
         for v in r["whatsapp"]["by_category"].values():
             v.pop("charged_micro", None)

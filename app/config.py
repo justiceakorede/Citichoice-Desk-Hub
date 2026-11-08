@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Customer stats (Chatwoot reports). A dedicated "hub-reporter" Chatwoot user, added as an administrator of every tenant
     # account, supplies this token. Platform tokens cannot read account reports.
     chatwoot_report_token: str = ""
+    service_messages_free: bool = False   # Meta now charges service messages (1,000 free per number per month); False = charge them like the rest
     price_display_market: str = "NG"    # market whose per-message prices the customer Overview shows (falls back to the default market *)
     stats_cache_seconds: int = 120       # Chatwoot report results are cached this long per tenant and range
     stats_http_timeout: float = 8.0

@@ -8,6 +8,9 @@
   escalate          lock tenants paused longer than SUSPEND_GRACE_DAYS (run daily)
   wisecp-invoice ID        show how the hub reads a WiseCP invoice and what it WOULD credit (changes nothing)
   topup-invoice ID         read a WiseCP invoice and credit its Desk top-up lines (idempotent; use after a missed hook)
+  seed-meta-rates [--from YYYY-MM-DD]   load Meta's per-country rate card (app/data/meta_rates_2026-10-01.csv, USD) for all four categories
+  add-channel TENANT --type whatsapp --name N [--inbox ID] [--phone +234..] [--phone-number-id ID] [--waba-id ID]
+      register a channel (the WhatsApp phone-number id is what maps Meta billing events to the customer)
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
   create-tenant SERVICE_ID --name N --email E --plan P --currency C [--chatwoot-account ID] [--chatwoot-user ID] [--no-owner-login]\n      create a hub tenant for an EXISTING WiseCP service (adopts an existing Chatwoot workspace when --chatwoot-account is given)\n  fx-sync           pull current exchange rates from WiseCP and store them (run on a schedule, e.g. hourly)
@@ -46,6 +49,9 @@ def main():
     ct.add_argument("--name", required=True); ct.add_argument("--email", required=True); ct.add_argument("--plan", required=True)
     ct.add_argument("--currency", required=True); ct.add_argument("--chatwoot-account", type=int); ct.add_argument("--chatwoot-user", type=int)
     ct.add_argument("--no-owner-login", action="store_true")
+    sm = sub.add_parser("seed-meta-rates"); sm.add_argument("--from", dest="eff")
+    ac = sub.add_parser("add-channel"); ac.add_argument("tenant"); ac.add_argument("--type", required=True); ac.add_argument("--name", required=True)
+    ac.add_argument("--inbox", type=int); ac.add_argument("--phone"); ac.add_argument("--phone-number-id"); ac.add_argument("--waba-id")
     rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
     wi = sub.add_parser("wisecp-invoice"); wi.add_argument("invoice_id")
@@ -137,6 +143,37 @@ def main():
             ts.audit(db, "cli", "tenant.create", t.id, {"plan": plan.code, "adopted_account": bool(a.chatwoot_account), "entitlement": ent.snapshot(t)})
             db.commit()
             print(f"tenant {t.id} ({t.slug}) created for WiseCP service {a.service_id}; the worker will provision/adopt it")
+        elif a.cmd == "seed-meta-rates":
+            import csv, datetime as _dt
+            from pathlib import Path
+            from .services import rates as rt
+            eff = _dt.date.fromisoformat(a.eff) if a.eff else _dt.date.today()
+            added = skipped = 0
+            src = "Meta WhatsApp rate card effective 2026-10-01 (owner-supplied spreadsheet; verify against developers.facebook.com)"
+            with open(Path(__file__).parent / "data" / "meta_rates_2026-10-01.csv", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    for cat in rt.CATEGORIES:
+                        try:
+                            rt.add_rate(db, category=cat, market=row["market"], currency=row["currency"], rate=row[cat], effective_from=eff,
+                                        source=src, actor="cli:seed-meta-rates")
+                            added += 1
+                        except rt.RateError as e:
+                            if e.code != "overlap":
+                                raise SystemExit(f"{row['market']}/{cat}: {e}")
+                            skipped += 1
+            db.commit()
+            print(f"rate cards added: {added}; already present (skipped): {skipped}")
+        elif a.cmd == "add-channel":
+            from .services import channels as chs
+            t = db.scalar(select(Tenant).where((Tenant.id == a.tenant) | (Tenant.slug == a.tenant)))
+            if not t:
+                raise SystemExit("tenant not found (use its id or slug)")
+            ch = chs.create_channel(db, t.id, {"channel_type": a.type, "provider": "chatwoot_native", "display_name": a.name,
+                                               "chatwoot_inbox_id": a.inbox, "phone_number": a.phone, "external_id": a.phone_number_id,
+                                               "external_account_id": a.waba_id, "status": "connected"})
+            ts.audit(db, "cli", "channel.create", t.id, {"channel": ch.id, "type": ch.channel_type})
+            db.commit()
+            print(f"channel {ch.id} registered for {t.slug}")
         elif a.cmd == "retry-job":
             from .models import ProvisioningJob
             j = db.get(ProvisioningJob, a.job_id)
