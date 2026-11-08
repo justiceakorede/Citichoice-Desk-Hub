@@ -124,6 +124,9 @@ def h_provision(db: Session, cw: ChatwootClient, job: ProvisioningJob, t: Tenant
     if t.status != "provisioning":        # active already, or cancelled while queued: nothing to do
         return
     res = job.result or {}
+    # Staff supplied both ids for an existing workspace: the user is already a member, so there is nothing to add.
+    # (If this job created either one itself, its own progress marks say so and the membership step still runs.)
+    adopted_both = bool(t.chatwoot_account_id and t.chatwoot_user_id and res.get("account") != "done" and res.get("user") != "done")
     if not t.chatwoot_account_id:
         if res.get("account") == "started":
             raise JobBlocked("a previous attempt may have created the Chatwoot account; check Chatwoot, "
@@ -153,7 +156,7 @@ def h_provision(db: Session, cw: ChatwootClient, job: ProvisioningJob, t: Tenant
             raise
         db.commit()
         _mark(db, job, user="done")
-    if t.chatwoot_user_id and (job.result or {}).get("membership") != "done":
+    if t.chatwoot_user_id and not adopted_both and (job.result or {}).get("membership") != "done":
         cw.add_user(t.chatwoot_account_id, t.chatwoot_user_id)
         _mark(db, job, membership="done")
     lifecycle.transition(t, "active")

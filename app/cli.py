@@ -8,6 +8,7 @@
   escalate          lock tenants paused longer than SUSPEND_GRACE_DAYS (run daily)
   wisecp-invoice ID        show how the hub reads a WiseCP invoice and what it WOULD credit (changes nothing)
   topup-invoice ID         read a WiseCP invoice and credit its Desk top-up lines (idempotent; use after a missed hook)
+  retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
   create-tenant SERVICE_ID --name N --email E --plan P --currency C [--chatwoot-account ID] [--chatwoot-user ID] [--no-owner-login]\n      create a hub tenant for an EXISTING WiseCP service (adopts an existing Chatwoot workspace when --chatwoot-account is given)\n  fx-sync           pull current exchange rates from WiseCP and store them (run on a schedule, e.g. hourly)
   seed-plans        load ISO currencies and the default plans (development only; migrations seed production)
@@ -45,6 +46,7 @@ def main():
     ct.add_argument("--name", required=True); ct.add_argument("--email", required=True); ct.add_argument("--plan", required=True)
     ct.add_argument("--currency", required=True); ct.add_argument("--chatwoot-account", type=int); ct.add_argument("--chatwoot-user", type=int)
     ct.add_argument("--no-owner-login", action="store_true")
+    rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
     wi = sub.add_parser("wisecp-invoice"); wi.add_argument("invoice_id")
     ti = sub.add_parser("topup-invoice"); ti.add_argument("invoice_id")
@@ -135,6 +137,18 @@ def main():
             ts.audit(db, "cli", "tenant.create", t.id, {"plan": plan.code, "adopted_account": bool(a.chatwoot_account), "entitlement": ent.snapshot(t)})
             db.commit()
             print(f"tenant {t.id} ({t.slug}) created for WiseCP service {a.service_id}; the worker will provision/adopt it")
+        elif a.cmd == "retry-job":
+            from .models import ProvisioningJob
+            j = db.get(ProvisioningJob, a.job_id)
+            if not j:
+                raise SystemExit("job not found")
+            try:
+                jobs.requeue(db, j, None, None, False)
+            except ValueError as e:
+                raise SystemExit(f"retry refused: {e}")
+            ts.audit(db, "cli", "job.retry", j.tenant_id, {"job": j.id})
+            db.commit()
+            print(f"job {j.id} requeued; the worker will pick it up")
         elif a.cmd == "add-reporter":
             from .services.chatwoot import ProvisioningError
             cw = get_chatwoot()
