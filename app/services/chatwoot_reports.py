@@ -30,6 +30,9 @@ class ChatwootReports:
     def configured(self) -> bool:
         return bool(self.base and self.token)
 
+    def with_token(self, token: str) -> "ChatwootReports":
+        return ChatwootReports(self.base, token, self.timeout)
+
     def summary(self, account_id: int, since: dt.datetime, until: dt.datetime, inbox_id: int | None = None) -> dict:
         if not self.configured:
             raise ReportError("not_configured")

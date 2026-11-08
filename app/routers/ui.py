@@ -21,20 +21,49 @@ from ..services import adjustments as adj_svc, fx as fx_svc, jobs, lifecycle as 
 
 router = APIRouter()
 
-BASE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ title }}</title><style>
-body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#14171c}
-header{background:#14171c;color:#fff;padding:12px 20px;display:flex;gap:20px;align-items:center}
-header a{color:#cfd6e4;text-decoration:none} main{max-width:1000px;margin:20px auto;padding:0 16px}
-table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden}
-th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #eceef2} th{background:#f0f2f6;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-.card{background:#fff;border-radius:8px;padding:16px;margin:0 0 16px}.row{display:flex;gap:16px;flex-wrap:wrap}.row>.card{flex:1;min-width:200px}
-.big{font-size:26px;font-weight:600}.pill{padding:2px 8px;border-radius:99px;font-size:12px;background:#e4e8ef}
-.active{background:#d7f3df}.suspended,.cancelled{background:#fde0de}.zero,.critical{color:#b3261e}.low{color:#9a6700}
-input,select,button{font:inherit;padding:7px 9px;border:1px solid #c9cfda;border-radius:6px} button{background:#14171c;color:#fff;cursor:pointer}
-form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}.muted{color:#667}
-</style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<a href="/ui">Tenants</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/audit">Audit</a><span style="margin-left:auto;color:#9aa4b8">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button>Sign out</button></form>{% endif %}</header>
+BASE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>{{ title }}</title><style>
+:root{--bg:#f4f6fa;--card:#fff;--ink:#12161f;--muted:#667085;--line:#e6e9f0;--head:#0f1420;--accent:#4f46e5;--ok:#d9f5e3;--okt:#116b3a;--bad:#fde4e1;--badt:#a3261a;--warn:#fff1d6;--warnt:#8a5a00}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b24;--ink:#e8ecf4;--muted:#98a2b3;--line:#262d3a;--head:#090c12;--accent:#818cf8;--ok:#12331f;--okt:#7be0a6;--bad:#3a1713;--badt:#ff9d92;--warn:#3a2c0b;--warnt:#f5c867}}
+*{box-sizing:border-box}body{font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
+header{background:var(--head);color:#fff;padding:10px 16px;display:flex;gap:6px 18px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+header b{margin-right:8px}header a{color:#c4cce0;text-decoration:none;padding:6px 10px;border-radius:8px}header a:hover{background:#ffffff1a;color:#fff}
+main{max-width:1180px;margin:20px auto;padding:0 14px 40px}h2{font-size:20px;margin:22px 0 10px}
+.tablewrap,main>table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}td{white-space:normal}th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:transparent}
+tr:last-child td{border-bottom:0}a{color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:0 0 16px;box-shadow:0 1px 2px #0000000a}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.row>.card{margin:0}
+.big{font-size:26px;font-weight:650;letter-spacing:-.01em}.muted{color:var(--muted)}
+.pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;background:var(--line);color:var(--ink)}
+.active{background:var(--ok);color:var(--okt)}.suspended,.cancelled{background:var(--bad);color:var(--badt)}.pending{background:var(--warn);color:var(--warnt)}
+.zero,.critical{color:var(--badt)}.low{color:var(--warnt)}
+input,select,button,textarea{font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);max-width:100%}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{background:var(--accent);border-color:var(--accent);color:#fff;cursor:pointer;font-weight:550}button:hover{filter:brightness(1.08)}button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}.grid2 label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}.grid2 input,.grid2 select{width:100%}
+@media(max-width:640px){main{margin-top:12px}.big{font-size:22px}th,td{padding:8px}}
+</style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/audit">Audit</a><span style="margin-left:auto;color:#9aa4b8">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form>{% endif %}</header>
 <main>{% block body %}{% endblock %}</main></body></html>"""
+
+T_PLANS = """{% extends "base" %}{% block body %}<h2>Plans</h2>
+<p class="muted">What each plan allows. Changing a plan applies to every customer on it who has no custom override, and updates their Chatwoot limits within a minute. Leave a number blank only if every customer on that plan has an override.</p>
+{% for p in plans %}<div class="card"><form method="post" action="/ui/plans/{{ p.code }}">
+<input type="hidden" name="csrf" value="{{ csrf }}"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px"><b>{{ p.code }}</b><span class="muted">{{ counts.get(p.id, 0) }} customer(s) on this plan{% if not p.active %} &middot; <span class="pill suspended">inactive</span>{% endif %}</span></div>
+<div class="grid2"><div><label>Display name</label><input name="name" value="{{ p.name }}" required></div>
+<div><label>Seats (agents)</label><input name="seats" inputmode="numeric" value="{{ p.seats if p.seats is not none else '' }}"></div>
+<div><label>Channels</label><input name="channels" inputmode="numeric" value="{{ p.channels if p.channels is not none else '' }}"></div>
+<div><label>AI replies / month</label><input name="ai_replies" inputmode="numeric" value="{{ p.ai_replies if p.ai_replies is not none else '' }}"></div>
+<div><label>Default markup (x)</label><input name="default_markup" inputmode="decimal" value="{{ p.default_markup if p.default_markup is not none else '' }}" placeholder="e.g. 1.25"></div>
+<div><label>Knowledge base level</label><select name="kb_level">{% for k in ('basic','standard','advanced') %}<option {{ 'selected' if p.kb_level==k }}>{{ k }}</option>{% endfor %}</select></div>
+<div><label>Status</label><select name="active"><option value="1" {{ 'selected' if p.active }}>Active</option><option value="0" {{ 'selected' if not p.active }}>Inactive</option></select></div>
+<div><button>Save {{ p.code }}</button></div></div></form></div>{% endfor %}
+<h2>New plan</h2><div class="card"><form method="post" action="/ui/plans"><input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="grid2"><div><label>Code (lowercase)</label><input name="code" pattern="[a-z0-9_-]{2,40}" required placeholder="enterprise"></div><div><label>Display name</label><input name="name" required></div>
+<div><label>Seats</label><input name="seats" inputmode="numeric"></div><div><label>Channels</label><input name="channels" inputmode="numeric"></div><div><label>AI replies / month</label><input name="ai_replies" inputmode="numeric"></div>
+<div><label>Default markup (x)</label><input name="default_markup" inputmode="decimal"></div><div><button>Create plan</button></div></div></form></div>{% endblock %}"""
 
 T_LIST = """{% extends "base" %}{% block body %}<h2>Tenants</h2><table><tr><th>Name</th><th>Plan</th><th>Status</th><th>Wallet</th><th>AI</th><th>Seats</th><th>Channels</th></tr>
 {% for s in rows %}<tr><td><a href="/ui/tenants/{{ s.id }}">{{ s.name }}</a></td><td>{{ s.plan }}</td><td><span class="pill {{ s.status }}">{{ s.status }}{% if s.suspend_mode!='none' %} / {{ s.suspend_mode }}{% endif %}</span></td>
@@ -97,7 +126,7 @@ T_USAGE = """{% extends "base" %}{% block body %}<h2>{{ t.name }}: messaging wal
 <div class="card"><b>Recent activity</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th></tr>
 {% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
-env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES,
+env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
 env.globals["fmt"] = money.format_micro
@@ -274,6 +303,75 @@ def ui_approve_fx(fx_id: str, csrf: str = Form(...), user: str = Depends(staff),
     ts.audit(db, user, "fx.approve", None, {"approved": fx_id, "new_row": row.id})
     db.commit()
     return RedirectResponse("/ui/rates", status_code=303)
+
+
+def _int_or_none(v: str, name: str):
+    v = (v or "").strip()
+    if v == "":
+        return None
+    if not v.isdigit() or int(v) > 10_000_000:
+        raise HTTPException(422, f"{name} must be a whole number, or blank")
+    return int(v)
+
+
+def _markup_or_none(v: str):
+    v = (v or "").strip()
+    if v == "":
+        return None
+    try:
+        d = Decimal(v)
+    except ArithmeticError:
+        raise HTTPException(422, "markup must be a number such as 1.25")
+    if not (Decimal("1") <= d <= Decimal("50")):
+        raise HTTPException(422, "markup must be between 1 and 50")
+    return d
+
+
+@router.get("/ui/plans", response_class=HTMLResponse)
+def ui_plans(user: str = Depends(staff), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from ..models import Plan, TenantEntitlement
+    plans = db.scalars(select(Plan).order_by(Plan.created_at)).all()
+    counts = dict(db.execute(select(TenantEntitlement.plan_id, func.count()).group_by(TenantEntitlement.plan_id)).all())
+    return render("plans", user, staff=True, plans=plans, counts=counts, csrf=csrf_token(user))
+
+
+@router.post("/ui/plans/{code}")
+def ui_plan_save(code: str, name: str = Form(...), seats: str = Form(""), channels: str = Form(""), ai_replies: str = Form(""),
+                 default_markup: str = Form(""), kb_level: str = Form("basic"), active: str = Form("1"), csrf: str = Form(...),
+                 user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..models import Plan, TenantEntitlement
+    check_csrf(user, csrf)
+    p = db.scalar(select(Plan).where(Plan.code == code)) or (_ for _ in ()).throw(HTTPException(404))
+    if kb_level not in ("basic", "standard", "advanced"):
+        raise HTTPException(422, "bad knowledge base level")
+    before = {"seats": p.seats, "channels": p.channels, "ai_replies": p.ai_replies, "markup": str(p.default_markup), "active": p.active}
+    p.name, p.seats, p.channels = name.strip()[:100] or p.name, _int_or_none(seats, "seats"), _int_or_none(channels, "channels")
+    p.ai_replies, p.default_markup, p.kb_level, p.active = _int_or_none(ai_replies, "AI replies"), _markup_or_none(default_markup), kb_level, active == "1"
+    for t in db.scalars(select(Tenant).join(TenantEntitlement, TenantEntitlement.tenant_id == Tenant.id)
+                        .where(TenantEntitlement.plan_id == p.id, Tenant.status.in_(("active", "suspended")))):
+        jobs.enqueue(db, t.id, "sync_limits", f"sync-limits:{t.id}:{uid()}")
+    ts.audit(db, user, "plan.update", None, {"code": p.code, "before": before, "after": {"seats": p.seats, "channels": p.channels,
+             "ai_replies": p.ai_replies, "markup": str(p.default_markup), "active": p.active}})
+    db.commit()
+    return RedirectResponse("/ui/plans", status_code=303)
+
+
+@router.post("/ui/plans")
+def ui_plan_create(code: str = Form(...), name: str = Form(...), seats: str = Form(""), channels: str = Form(""), ai_replies: str = Form(""),
+                   default_markup: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    import re
+    from ..models import Plan
+    check_csrf(user, csrf)
+    code = code.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_-]{2,40}", code) or db.scalar(select(Plan).where(Plan.code == code)):
+        raise HTTPException(422, "plan code must be 2-40 lowercase letters, digits, - or _, and not already used")
+    p = Plan(code=code, name=name.strip()[:100], seats=_int_or_none(seats, "seats"), channels=_int_or_none(channels, "channels"),
+             ai_replies=_int_or_none(ai_replies, "AI replies"), default_markup=_markup_or_none(default_markup), currency="USD")
+    db.add(p)
+    ts.audit(db, user, "plan.create", None, {"code": code})
+    db.commit()
+    return RedirectResponse("/ui/plans", status_code=303)
 
 
 @router.get("/ui/audit", response_class=HTMLResponse)

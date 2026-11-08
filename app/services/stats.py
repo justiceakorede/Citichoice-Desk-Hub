@@ -8,6 +8,8 @@ A failing Chatwoot call degrades that figure to `available: false` with a reason
 import datetime as dt
 import time
 
+from decimal import Decimal
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,7 @@ from . import tenants as ts
 from .chatwoot_reports import ChatwootReports, ReportError
 from .periods import period_start_utc
 
+_token_cache: dict[str, tuple[float, str]] = {}
 RANGES = ("month", "7d", "30d", "90d")
 _cache: dict[tuple, tuple[float, dict]] = {}          # per process; the hub runs one or a few workers, so this only trims load
 
@@ -110,5 +113,47 @@ def tenant_stats(db: Session, t: Tenant, ranges: list[str], rep: ChatwootReports
         out_ranges[name] = {"since": since.isoformat(), "until": until.isoformat(), "totals": cw["account"], "channels": per_channel,
                             "whatsapp": _whatsapp_billing(db, t, since, until, cur)}
     return {"tenant_id": t.id, "generated_at": now().isoformat(), "currency": cur, "wallet": wallet,
-            "ai_replies": cv["ai_replies"], "seats": cv["seats"], "channels_plan": cv["channels"], "status": t.status,
+            "message_prices": message_prices(db, t), "ai_replies": cv["ai_replies"], "seats": cv["seats"], "channels_plan": cv["channels"], "status": t.status,
             "ranges": out_ranges}
+
+
+def reports_for(t: Tenant, base: ChatwootReports, cw) -> ChatwootReports:
+    """Reports are read with CHATWOOT_REPORT_TOKEN when set; otherwise as the tenant's own owner user, whose token the Platform
+    App can fetch. That needs no extra user in the customer's workspace, so no extra seat and nothing the customer can remove."""
+    if getattr(base, "token", "") or not t.chatwoot_user_id or cw is None:
+        return base
+    hit = _token_cache.get(t.id)
+    if hit and hit[0] > time.monotonic():
+        tok = hit[1]
+    else:
+        try:
+            tok = cw.user_token(t.chatwoot_user_id)
+        except Exception:                                  # ProvisioningError or transport: stats degrade to "not available"
+            return base
+        if tok:
+            _token_cache[t.id] = (time.monotonic() + 600, tok)
+    return base.with_token(tok) if tok else base
+
+
+def _unit(micro: int, cur: str) -> str:
+    """A per-message price needs more decimals than a wallet balance does."""
+    v = (Decimal(micro) / Decimal(1_000_000)).quantize(Decimal("0.0001"))
+    txt = f"{v:f}".rstrip("0")
+    if len(txt.split(".")[1]) < 2:
+        txt += "0" * (2 - len(txt.split(".")[1]))
+    return f"{cur} {txt}"
+
+
+def message_prices(db: Session, t: Tenant) -> dict:
+    """What one WhatsApp message of each category costs this customer, from the hub's own rate cards, FX and their markup."""
+    from . import pricing, rates
+    from . import wallet as wl
+    w = wl.get_wallet(db, t.id)
+    out = {}
+    for cat in rates.CATEGORIES:
+        try:
+            snap = pricing.price(db, t, w, cat, None, now())
+        except pricing.PricingError:
+            continue
+        out[cat] = {"per_message": _unit(snap.unit_charge_micro, w.currency), "free": snap.unit_charge_micro == 0}
+    return out

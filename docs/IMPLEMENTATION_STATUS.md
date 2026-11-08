@@ -65,3 +65,10 @@ new `tests/test_stats_topups.py`. Run the whole suite first and fix whatever it 
 - STILL NOT BUILT: reversal when WiseCP refunds or deletes a top-up payment; a held ("needs_review") top-up has no staff screen
   yet (it is an audit row `topup.needs_review`; credit it through the existing maker-checker adjustment, then re-run is safe because the
   adjustment uses its own key, so check the ledger first); polling as a fallback when the WiseCP hook does not fire.
+
+## Added later (all NOT RUN)
+- Migration 0010: a staff member can reject (withdraw) their own adjustment request. The old rule needed a second person for any decision, so a sole admin rejecting got a 500.
+- Staff UI: modern, responsive, dark-mode-aware layout; new **Plans** page (seats, channels, AI replies, markup, KB level, active). Saving enqueues `sync_limits` for every active tenant on the plan.
+- `PUT /admin/tenants/{id}/owner-password` (Platform API `PATCH /users/{id}`), `Chatwoot.user_token()` so stats read reports as the tenant's own owner (no extra seat). [UNVERIFIED] both Platform API behaviours.
+- `message_prices` in stats: customer per-message price per category (default market).
+- WiseCP Server module replaces the Product module.

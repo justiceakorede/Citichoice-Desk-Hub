@@ -294,7 +294,7 @@ class AdjustmentRequest(Base):
     __table_args__ = (CheckConstraint("kind in ('wallet_credit', 'wallet_debit', 'receivable_writeoff', 'manual_charge', 'usage_reversal')", name="ck_adjustment_kind"),
                       CheckConstraint("status in ('pending', 'posted', 'rejected')", name="ck_adjustment_status"),
                       CheckConstraint("amount_micro > 0", name="ck_adjustment_amount"),
-                      CheckConstraint("decided_by is null or decided_by <> requested_by or self_approved", name="ck_adjustment_two_people"),
+                      CheckConstraint("status = 'rejected' or decided_by is null or decided_by <> requested_by or self_approved", name="ck_adjustment_two_people"),
                       Index("ix_adjustment_status", "status", "requested_at"))
 
 

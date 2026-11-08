@@ -64,3 +64,12 @@ class ChatwootClient:
 
     def login_link(self, user_id: int) -> str:
         return self._req("GET", f"/users/{user_id}/login")["url"]
+
+    def set_user_password(self, user_id: int, password: str) -> None:
+        """[Check] Platform API `PATCH /users/{id}` accepts `password`. Used so WiseCP can show a password next to the login."""
+        self._req("PATCH", f"/users/{user_id}", json={"password": password})
+
+    def user_token(self, user_id: int) -> str:
+        """[Check] Platform API `GET /users/{id}` returns the user's access_token for users the Platform App created.
+        Lets the hub read an account's reports as its own owner, with no extra seat and no extra user to remove."""
+        return str(self._req("GET", f"/users/{user_id}").get("access_token") or "")
