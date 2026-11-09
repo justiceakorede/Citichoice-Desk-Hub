@@ -62,6 +62,7 @@ class Line:
     discount_is_percent: bool
     service_id: str | None
     addon_id: str | None
+    raw: dict = field(default_factory=dict)
 
     @property
     def subtotal(self) -> Decimal:
@@ -101,7 +102,7 @@ def parse_invoice(raw: dict) -> Invoice:
             quantity=_d(_first(it, "quantity", "qty"), Decimal(1)), unit=_d(_first(it, "amount", "unit_amount", "price")),
             discount=_d(_first(it, "discount")), discount_is_percent=dtype in ("percent", "percentage", "rate", "%"),
             service_id=(str(_first(it, "user_pid", "service_id")) if _first(it, "user_pid", "service_id") else None),
-            addon_id=(str(_first(it, "addon_id", default=_first(opts, "addon_id", "id", default=""))) or None)))
+            addon_id=(str(_first(it, "addon_id", default=_first(opts, "addon_id", "id", default=""))) or None), raw=it))
     pays = d.get("payments") or []
     paid_in = sum((_d(p.get("amount_in", p.get("amount"))) - _d(p.get("amount_out")) for p in pays), Decimal(0))
     return Invoice(invoice_id=str(inv_id), status=status, currency=cur, total=_d(_first(d, "total", "grand_total")), lines=lines,
@@ -138,7 +139,9 @@ def is_topup_line(line: Line) -> bool:
     s = get_settings()
     if line.addon_id is not None and line.addon_id == str(s.wisecp_topup_addon_id):
         return True
-    return bool(s.wisecp_topup_description) and line.description.strip().lower() == s.wisecp_topup_description.strip().lower()
+    # WiseCP often appends the service or plan name to an add-on's invoice line, so match the wording INSIDE the description.
+    want = (s.wisecp_topup_description or "").strip().lower()
+    return bool(want) and want in " ".join(line.description.lower().split())
 
 
 def _anomaly(inv: Invoice, currency: str) -> str | None:
@@ -209,7 +212,8 @@ def process_invoice(db: Session, inv: Invoice, actor: str) -> dict:
         results.append({**res, "result": "credited" if p.created else "already_credited", "amount_micro": micro, "currency": w.currency,
                         "balance_micro": p.balance_micro, **flags})
     db.commit()
-    return {"invoice_id": inv.invoice_id, "status": inv.status, "results": results}
+    return {"invoice_id": inv.invoice_id, "status": inv.status, "results": results,
+            "lines": [{"line_id": l.line_id, "description": l.description[:80], "addon_id": l.addon_id, "service_id": l.service_id} for l in inv.lines]}
 
 
 def get_wisecp() -> WisecpClient:

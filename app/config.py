@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     service_messages_free: bool = False   # Meta now charges service messages (1,000 free per number per month); False = charge them like the rest
     # Meta billing (daily reconciliation from Meta's own pricing analytics; see app/services/meta_billing.py)
     meta_access_token: str = ""             # system-user token with whatsapp_business_management; set in Coolify, never in git
+    meta_waba_tokens: str = ""              # optional JSON {"<waba id>": "<token>"} for WABAs the main token cannot see (other Meta businesses)
     meta_graph_version: str = "v23.0"
     meta_billing_lag_hours: int = 36        # a UTC day is billed only this long after it ends, so Meta's figures have settled
     meta_billing_start: str = ""            # YYYY-MM-DD: nothing before this date is ever billed. REQUIRED: stops history from being charged

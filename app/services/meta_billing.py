@@ -53,15 +53,20 @@ def _digits(v) -> str:
 
 def fetch_day(waba_id: str, day: dt.date) -> list[Point]:
     s = get_settings()
-    if not s.meta_access_token:
-        raise MetaError("META_ACCESS_TOKEN is not set")
+    try:
+        per_waba = json.loads(s.meta_waba_tokens) if s.meta_waba_tokens else {}
+    except ValueError as e:
+        raise MetaError("META_WABA_TOKENS is not valid JSON") from e
+    token = per_waba.get(str(waba_id)) or s.meta_access_token
+    if not token:
+        raise MetaError(f"no Meta token for WABA {waba_id} (set META_ACCESS_TOKEN, or META_WABA_TOKENS for this WABA)")
     start = int(dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc).timestamp())
     end = start + 86400
     fields = (f'pricing_analytics.start({start}).end({end}).granularity(DAILY).phone_numbers([])'
               f'.dimensions(["PRICING_CATEGORY","COUNTRY","PHONE"])')
     try:
         r = httpx.get(f"https://graph.facebook.com/{s.meta_graph_version}/{waba_id}", params={"fields": fields},
-                      headers={"Authorization": f"Bearer {s.meta_access_token}"}, timeout=30)
+                      headers={"Authorization": f"Bearer {token}"}, timeout=30)
     except httpx.HTTPError as e:
         raise MetaError(f"unreachable:{type(e).__name__}") from e
     if r.status_code >= 400:

@@ -14,6 +14,7 @@
   meta-billing-sync [--days 7] [--dry-run]   bill WhatsApp usage from Meta's daily pricing analytics (idempotent; schedule it hourly)
   notify-run [--force-report] [--dry-run]   send due weekly reports and low-balance alerts (schedule hourly; each is sent once)
   set-notify TENANT [--report on|off] [--low-balance on|off] [--whatsapp 234...,234...] [--email a@b.com,...]
+  onboard-check TENANT     checklist of everything a client needs (Chatwoot access, channels, rates, balance, keys, notifications)
   list-tenants             show every tenant: id, slug, name, status, WiseCP service, Chatwoot account
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
@@ -60,6 +61,7 @@ def main():
     nr = sub.add_parser("notify-run"); nr.add_argument("--force-report", action="store_true"); nr.add_argument("--dry-run", action="store_true")
     sn = sub.add_parser("set-notify"); sn.add_argument("tenant"); sn.add_argument("--report", choices=["on", "off"]); sn.add_argument("--low-balance", choices=["on", "off"])
     sn.add_argument("--whatsapp"); sn.add_argument("--email")
+    oc = sub.add_parser("onboard-check"); oc.add_argument("tenant")
     sub.add_parser("list-tenants")
     rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
@@ -206,6 +208,66 @@ def main():
                                                             "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
             db.commit()
             print(f"{t.slug}: {nf.conf(t)}")
+        elif a.cmd == "onboard-check":
+            import datetime as _dt
+            import json as _json
+            from . import money
+            from .models import TenantChannel
+            from .services import notify as nf, pricing as pr, rates as rt, stats as st_svc, wallet as wlt
+            from .services.chatwoot_reports import ChatwootReports, ReportError
+            t = db.scalar(select(Tenant).where((Tenant.id == a.tenant) | (Tenant.slug == a.tenant)))
+            if not t:
+                raise SystemExit("tenant not found (python -m app.cli list-tenants)")
+            S = get_settings()
+            def line(ok, what, fix=""):
+                print(("  [ OK ] " if ok else "  [FIX ] ") + what + ("" if ok or not fix else "\n           -> " + fix))
+            print(f"{t.name} ({t.slug}) status={t.status} plan/entitlement ok")
+            line(t.status == "active", f"tenant status is {t.status}", "wait for the worker, or `retry-job <job id>`; check Audit for a blocked job")
+            line(bool(t.chatwoot_account_id), f"Chatwoot account {t.chatwoot_account_id}", "create-tenant needs --chatwoot-account for an existing workspace")
+            line(bool(t.chatwoot_user_id), f"Chatwoot owner user {t.chatwoot_user_id}", "needed for sign-in link, password and stats (create-tenant --chatwoot-user)")
+            cw = get_chatwoot()
+            tok = ""
+            try:
+                tok = cw.user_token(t.chatwoot_user_id) if t.chatwoot_user_id else ""
+            except Exception as e:
+                tok = ""
+                print(f"           (Chatwoot said: {str(e)[:120]})")
+            line(bool(tok), "Platform App can read the owner user (stats, sign-in)", "Rails console: PlatformAppPermissible for this Account AND this User (see docs/ONBOARDING.md)")
+            if tok and t.chatwoot_account_id:
+                try:
+                    rep = ChatwootReports(S.chatwoot_url, tok, S.stats_http_timeout)
+                    now_ = _dt.datetime.now(_dt.timezone.utc)
+                    r = rep.summary(t.chatwoot_account_id, now_ - _dt.timedelta(days=30), now_)
+                    line(True, f"Chatwoot reports readable (last 30 days: {r['conversations']} conversations, {r['messages']} messages)")
+                except ReportError as e:
+                    line(False, f"Chatwoot reports failed ({e})", "the owner user must be an administrator of the account")
+            chans = db.scalars(select(TenantChannel).where(TenantChannel.tenant_id == t.id, TenantChannel.status != "removed")).all()
+            line(bool(chans), f"{len(chans)} channel(s) registered", "add-channel (needed for billing: it maps Meta's number to this client)")
+            for c in chans:
+                if c.channel_type == "whatsapp":
+                    ok = bool(c.external_account_id and c.phone_number and c.external_id)
+                    line(ok, f"WhatsApp {c.phone_number or '?'}: WABA={c.external_account_id} phone_number_id={c.external_id}", "re-run add-channel with --phone, --phone-number-id and --waba-id")
+                    try:
+                        _tok = (_json.loads(S.meta_waba_tokens) if S.meta_waba_tokens else {}).get(str(c.external_account_id)) or S.meta_access_token
+                    except ValueError:
+                        _tok = ""
+                    line(bool(_tok), "a Meta token covers this WABA", "set META_ACCESS_TOKEN, or META_WABA_TOKENS={\"<waba>\":\"<token>\"}")
+            w = wlt.get_wallet(db, t.id)
+            line(w.balance_micro > 0, f"wallet {w.currency} balance {money.format_micro(w.balance_micro, w.currency)}", "UI > tenant > add credit (opening balance)")
+            bad = []
+            for cat in rt.CATEGORIES:
+                try:
+                    pr.price(db, t, w, cat, S.price_display_market or None, _dt.datetime.now(_dt.timezone.utc), persist=False)
+                except Exception:
+                    bad.append(cat)
+            line(not bad, "rate cards give a price for every category" if not bad else f"no price for: {', '.join(bad)}", "python -m app.cli seed-meta-rates, and fx-sync")
+            linked = {r for r in db.scalars(select(ApiKeyTenant.api_key_id).where(ApiKeyTenant.tenant_id == t.id))}
+            keys = [k for k in db.scalars(select(ApiKey).where(ApiKey.revoked.is_(False))) if "internal" in (k.scopes or []) and k.id in linked]
+            line(bool(keys), f"{len(keys)} internal key(s) for n8n", f"python -m app.cli create-key n8n-{t.slug} --scope internal --tenant {t.slug}")
+            n = nf.conf(t)
+            line(n["report_enabled"] or n["low_balance_enabled"], f"notifications: report={n['report_enabled']} low-balance={n['low_balance_enabled']} whatsapp={len(n['whatsapp'])} email={len(n['email'])}",
+                 f"python -m app.cli set-notify {t.slug} --report on --low-balance on --whatsapp <digits> --email <address>")
+            line(bool(S.meta_billing_start), f"META_BILLING_START={S.meta_billing_start or 'unset'}", "set it in Coolify (YYYY-MM-DD)")
         elif a.cmd == "list-tenants":
             for t in db.scalars(select(Tenant).order_by(Tenant.created_at)):
                 print(f"{t.id}  slug={t.slug}  name={t.name!r}  status={t.status}  wisecp_service={t.wisecp_service_id}  chatwoot_account={t.chatwoot_account_id}")
@@ -246,6 +308,7 @@ def main():
                     print(f"  line {l.line_id}: {l.description!r} qty={l.quantity} unit={l.unit} discount={l.discount}"
                           f"{'%' if l.discount_is_percent else ''} service={l.service_id} addon={l.addon_id} "
                           f"subtotal_ex_tax={l.subtotal} topup={wc.is_topup_line(l)}")
+                    print("     raw:", str(l.raw)[:400])
             else:
                 res = wc.process_invoice(db, inv, "cli:topup-invoice")
                 print(res)
