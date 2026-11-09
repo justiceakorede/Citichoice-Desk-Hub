@@ -34,6 +34,22 @@ class Settings(BaseSettings):
     # account, supplies this token. Platform tokens cannot read account reports.
     chatwoot_report_token: str = ""
     service_messages_free: bool = False   # Meta now charges service messages (1,000 free per number per month); False = charge them like the rest
+    # Meta billing (daily reconciliation from Meta's own pricing analytics; see app/services/meta_billing.py)
+    meta_access_token: str = ""             # system-user token with whatsapp_business_management; set in Coolify, never in git
+    meta_graph_version: str = "v23.0"
+    meta_billing_lag_hours: int = 36        # a UTC day is billed only this long after it ends, so Meta's figures have settled
+    meta_billing_start: str = ""            # YYYY-MM-DD: nothing before this date is ever billed. REQUIRED: stops history from being charged
+    # Customer notifications (weekly report, low-balance alert), sent from YOUR WhatsApp number and by email
+    notify_wa_phone_number_id: str = ""     # your own WhatsApp Business phone number id
+    notify_wa_token: str = ""               # falls back to META_ACCESS_TOKEN
+    notify_wa_report_template: str = "weekly_report"
+    notify_wa_low_template: str = "low_balance_alert"
+    notify_wa_language: str = "en"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
     price_display_market: str = "NG"    # market whose per-message prices the customer Overview shows (falls back to the default market *)
     stats_cache_seconds: int = 120       # Chatwoot report results are cached this long per tenant and range
     stats_http_timeout: float = 8.0

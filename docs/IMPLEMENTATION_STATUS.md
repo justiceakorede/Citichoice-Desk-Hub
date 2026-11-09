@@ -72,3 +72,18 @@ new `tests/test_stats_topups.py`. Run the whole suite first and fix whatever it 
 - `PUT /admin/tenants/{id}/owner-password` (Platform API `PATCH /users/{id}`), `Chatwoot.user_token()` so stats read reports as the tenant's own owner (no extra seat). [UNVERIFIED] both Platform API behaviours.
 - `message_prices` in stats: customer per-message price per category (default market).
 - WiseCP Server module replaces the Product module.
+
+## Meta billing (NOT RUN)
+`python -m app.cli meta-billing-sync` bills WhatsApp usage from Meta's daily pricing analytics (one usage row per phone number, day, category
+and country, fixed key so it can never double-charge). Needs META_ACCESS_TOKEN and META_BILLING_START, and a registered channel with
+phone number and WABA id (`add-channel`). Migration 0011 adds usage_records.quantity. Balance falls once a day, ~36h behind. There is
+still no real-time blocking: n8n does not call send-check/reservations, so a wallet can go negative (a receivable).
+[UNVERIFIED] the Graph pricing_analytics field syntax and response shape. Use --dry-run first.
+
+## Credit gate, instant debit, notifications (ALL NOT RUN)
+- n8n workflow (BennyBoom-AI-replies-hub-counted.json): before an AI reply it reserves one service message (`/internal/reservations`); with no
+  credit it sends nothing and hands the chat to a person. After each message posts it charges the wallet at once (`/internal/usage`, id `n8n:...`).
+  Team WhatsApp alerts are checked with `/internal/send-check` and charged as utility messages. If the hub is unreachable the bot keeps answering.
+- The daily Meta job now trues up per (customer, day, category): it charges only messages not already charged, and never refunds an over-estimate.
+- Messages typed by agents or sent by Chatwoot Campaigns are NOT gated; they are charged by the daily job. A wallet can therefore go negative.
+- Weekly report and low-balance alert: see docs/NOTIFICATIONS.md. Migrations 0011 (usage quantity) and 0012 (tenant notify settings).

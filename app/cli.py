@@ -11,6 +11,10 @@
   seed-meta-rates [--from YYYY-MM-DD]   load Meta's per-country rate card (app/data/meta_rates_2026-10-01.csv, USD) for all four categories
   add-channel TENANT --type whatsapp --name N [--inbox ID] [--phone +234..] [--phone-number-id ID] [--waba-id ID]
       register a channel (the WhatsApp phone-number id is what maps Meta billing events to the customer)
+  meta-billing-sync [--days 7] [--dry-run]   bill WhatsApp usage from Meta's daily pricing analytics (idempotent; schedule it hourly)
+  notify-run [--force-report] [--dry-run]   send due weekly reports and low-balance alerts (schedule hourly; each is sent once)
+  set-notify TENANT [--report on|off] [--low-balance on|off] [--whatsapp 234...,234...] [--email a@b.com,...]
+  list-tenants             show every tenant: id, slug, name, status, WiseCP service, Chatwoot account
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
   create-tenant SERVICE_ID --name N --email E --plan P --currency C [--chatwoot-account ID] [--chatwoot-user ID] [--no-owner-login]\n      create a hub tenant for an EXISTING WiseCP service (adopts an existing Chatwoot workspace when --chatwoot-account is given)\n  fx-sync           pull current exchange rates from WiseCP and store them (run on a schedule, e.g. hourly)
@@ -52,6 +56,11 @@ def main():
     sm = sub.add_parser("seed-meta-rates"); sm.add_argument("--from", dest="eff")
     ac = sub.add_parser("add-channel"); ac.add_argument("tenant"); ac.add_argument("--type", required=True); ac.add_argument("--name", required=True)
     ac.add_argument("--inbox", type=int); ac.add_argument("--phone"); ac.add_argument("--phone-number-id"); ac.add_argument("--waba-id")
+    mb = sub.add_parser("meta-billing-sync"); mb.add_argument("--days", type=int, default=7); mb.add_argument("--dry-run", action="store_true")
+    nr = sub.add_parser("notify-run"); nr.add_argument("--force-report", action="store_true"); nr.add_argument("--dry-run", action="store_true")
+    sn = sub.add_parser("set-notify"); sn.add_argument("tenant"); sn.add_argument("--report", choices=["on", "off"]); sn.add_argument("--low-balance", choices=["on", "off"])
+    sn.add_argument("--whatsapp"); sn.add_argument("--email")
+    sub.add_parser("list-tenants")
     rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
     wi = sub.add_parser("wisecp-invoice"); wi.add_argument("invoice_id")
@@ -174,6 +183,32 @@ def main():
             ts.audit(db, "cli", "channel.create", t.id, {"channel": ch.id, "type": ch.channel_type})
             db.commit()
             print(f"channel {ch.id} registered for {t.slug}")
+        elif a.cmd == "meta-billing-sync":
+            import datetime as _dt
+            from .services import meta_billing as mb_svc
+            try:
+                rep = mb_svc.sync(db, _dt.datetime.now(_dt.timezone.utc), a.days, a.dry_run)
+            except mb_svc.MetaError as e:
+                raise SystemExit(f"meta-billing-sync: {e}")
+            print(("DRY RUN (nothing charged): " if a.dry_run else "") + str(rep))
+        elif a.cmd == "notify-run":
+            import datetime as _dt
+            from .services import notify as nf
+            print(nf.run(db, _dt.datetime.now(_dt.timezone.utc), a.force_report, a.dry_run))
+        elif a.cmd == "set-notify":
+            from .services import notify as nf
+            t = db.scalar(select(Tenant).where((Tenant.id == a.tenant) | (Tenant.slug == a.tenant)))
+            if not t:
+                raise SystemExit("tenant not found (python -m app.cli list-tenants)")
+            nf.set_conf(t, report=None if a.report is None else a.report == "on", low=None if a.low_balance is None else a.low_balance == "on",
+                        whatsapp=None if a.whatsapp is None else a.whatsapp.split(","), email=None if a.email is None else a.email.split(","))
+            ts.audit(db, "cli", "tenant.notify_set", t.id, {"report": t.notify["report_enabled"], "low": t.notify["low_balance_enabled"],
+                                                            "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
+            db.commit()
+            print(f"{t.slug}: {nf.conf(t)}")
+        elif a.cmd == "list-tenants":
+            for t in db.scalars(select(Tenant).order_by(Tenant.created_at)):
+                print(f"{t.id}  slug={t.slug}  name={t.name!r}  status={t.status}  wisecp_service={t.wisecp_service_id}  chatwoot_account={t.chatwoot_account_id}")
         elif a.cmd == "retry-job":
             from .models import ProvisioningJob
             j = db.get(ProvisioningJob, a.job_id)

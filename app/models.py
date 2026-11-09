@@ -92,6 +92,7 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String(200))
     owner_email: Mapped[str] = mapped_column(String(200))
     owner_name: Mapped[str | None] = mapped_column(String(200))
+    notify: Mapped[dict | None] = mapped_column(JSON)       # report / low-balance settings and send state (no secrets)
 
     status: Mapped[str] = mapped_column(String(24), default="pending")
     suspend_mode: Mapped[str] = mapped_column(String(20), default="none")
@@ -333,6 +334,7 @@ class UsageRecord(Base):
     __tablename__ = "usage_records"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, server_default="1")   # messages this row stands for (daily reconciliation rows carry many)
     provider: Mapped[str] = mapped_column(String(30), default="meta_whatsapp")
     external_id: Mapped[str] = mapped_column(String(160))                # the provider's message id (a WhatsApp wamid)
     channel: Mapped[str] = mapped_column(String(20), default="whatsapp")

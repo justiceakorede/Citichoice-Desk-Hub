@@ -629,27 +629,12 @@ def topup_invoice(invoice_id: str, request: Request, db: Session = Depends(get_d
     try:
         inv = wc.get_invoice(invoice_id)
     except wisecp_svc.WisecpError as e:
+        ts.audit(db, request.state.actor, "topup.error", None, {"invoice": invoice_id, "code": e.code, "message": str(e)[:200]}, outcome="error")
+        db.commit()
         raise HTTPException(502 if e.code in ("unreachable", "insufficient_scope", "not_configured") or e.code.startswith("http_") else 404 if e.code == "invoice_not_found" else 422,
                             {"code": e.code, "message": str(e)})
-    return wisecp_svc.process_invoice(db, inv, request.state.actor)
-
-
-class OwnerPassword(BaseModel):
-    password: str = Field(min_length=12, max_length=128)
-
-
-@router.put("/tenants/{tid}/owner-password")
-def owner_password(tid: str, body: OwnerPassword, request: Request, db: Session = Depends(get_db),
-                   cw: ChatwootClient = Depends(get_chatwoot)):
-    """Sets the owner's Chatwoot password so WiseCP can show it next to the login (like a hosting control panel).
-    The hub never stores or logs it. 409 `not_ready` until provisioning has created the owner user."""
-    t = _t(db, tid)
-    if not t.chatwoot_user_id:
-        raise HTTPException(409, {"code": "not_ready", "message": "the owner user does not exist yet"})
-    try:
-        cw.set_user_password(t.chatwoot_user_id, body.password)
-    except ProvisioningError as e:
-        raise HTTPException(502, {"code": "chatwoot_error", "message": str(e)[:200]})
-    ts.audit(db, request.state.actor, "tenant.owner_password_set", t.id)
+    out = wisecp_svc.process_invoice(db, inv, request.state.actor)
+    ts.audit(db, request.state.actor, "topup.checked", None, {"invoice": invoice_id, "status": out.get("status"),
+             "results": [x.get("result") + (":" + x["reason"] if x.get("reason") else "") for x in out.get("results", [])], "note": out.get("note")})
     db.commit()
-    return {"ok": True}
+    return out

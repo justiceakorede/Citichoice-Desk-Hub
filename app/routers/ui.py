@@ -87,7 +87,15 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div class="card"><b>This month</b><table><tr><th>Category</th><th>Messages</th><th>Provider cost</th><th>FX buffer</th><th>Service fee</th><th>Charged</th></tr>
 {% for c,v in s.month_usage.items() %}<tr><td>{{ c }}</td><td>{{ v.messages }}</td><td>{{ fmt(v.provider_cost_micro, s.wallet.currency) }}</td><td>{{ fmt(v.fx_buffer_micro, s.wallet.currency) }}</td><td>{{ fmt(v.service_fee_micro, s.wallet.currency) }}</td><td>{{ fmt(v.charge_micro, s.wallet.currency) }}</td></tr>{% endfor %}</table></div>
 <div class="card"><b>Ledger</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th><th>Reference</th></tr>
-{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div>{% endblock %}"""
+{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
+<input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
+<div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Weekly report</label></div>
+<div><label><input type="checkbox" name="low" value="1" {{ 'checked' if n.get('low_balance_enabled') }}> Low-balance alert</label></div>
+<div><label>WhatsApp numbers (digits, comma separated)</label><input name="whatsapp" value="{{ (n.get('whatsapp') or [])|join(', ') }}" placeholder="2348012345678"></div>
+<div><label>Emails (comma separated)</label><input name="email" value="{{ (n.get('email') or [])|join(', ') }}"></div>
+<div><button>Save notifications</button></div></div>
+<p class="muted">Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number. Last report week: {{ (n.get('state') or {}).get('report_week', 'none yet') }}.</p></form></div>
+{% endblock %}"""
 
 T_RATES = """{% extends "base" %}{% block body %}<h2>Provider rate cards (what Meta charges per message)</h2>
 <div class="card"><form class="inline" method="post" action="/ui/rates"><input type="hidden" name="csrf" value="{{ csrf }}">
@@ -96,8 +104,12 @@ T_RATES = """{% extends "base" %}{% block body %}<h2>Provider rate cards (what M
 <input name="rate" type="text" inputmode="decimal" placeholder="Per message, e.g. 0.0067" required>
 <input name="effective_from" type="date" required><input name="source" placeholder="Source (Meta rate card URL or file)" required style="min-width:240px"><button>Add new version</button></form>
 <p class="muted">A new version closes the previous one on its start date. History is never edited and backdating is refused. Copy figures from Meta's current rate card, never from memory.</p></div>
+<div class="card"><form class="inline" method="get" action="/ui/rates"><input name="q" value="{{ q }}" placeholder="Filter: market or category, e.g. NG or utility" style="min-width:260px">
+<select name="per">{% for o in ('10','20','50','all') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ 'All' if o=='all' else o ~ ' per page' }}</option>{% endfor %}</select><button class="ghost">Apply</button>
+<span class="muted">{{ total }} rate version(s){% if pages > 1 %} &middot; page {{ page }} of {{ pages }}{% endif %}</span>
+{% if page > 1 %}<a href="/ui/rates?q={{ q|urlencode }}&per={{ per }}&page={{ page-1 }}">&laquo; Prev</a>{% endif %}{% if page < pages %}<a href="/ui/rates?q={{ q|urlencode }}&per={{ per }}&page={{ page+1 }}">Next &raquo;</a>{% endif %}</form></div>
 <table><tr><th>Category</th><th>Market</th><th>Currency</th><th>Rate</th><th>From</th><th>To</th><th>Ver</th><th>Source</th></tr>
-{% for r in rates %}<tr><td>{{ r.category }}</td><td>{{ r.market }}</td><td>{{ r.currency }}</td><td>{{ r.rate }}</td><td>{{ r.effective_from }}</td><td>{{ r.effective_to or 'open' }}</td><td>{{ r.version }}</td><td class="muted">{{ r.source }}</td></tr>{% endfor %}</table>
+{% for r in rates %}<tr><td>{{ r.category }}</td><td>{{ r.market }}</td><td>{{ r.currency }}</td><td>{{ r.rate_micro|rate }}</td><td>{{ r.effective_from }}</td><td>{{ r.effective_to or 'open' }}</td><td>{{ r.version }}</td><td class="muted">{{ r.source }}</td></tr>{% endfor %}</table>
 <h2>Exchange rates (1 base = rate quote)</h2><div class="card"><form class="inline" method="post" action="/ui/fx"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input name="base" value="USD" size="4"><input name="quote" size="4" placeholder="NGN" required><input name="rate" type="text" inputmode="decimal" placeholder="Rate" required><button>Add manual rate</button></form>
 <p class="muted">Normally rates come from WiseCP (fx-sync). A move over the quarantine threshold is held below until you approve it.</p></div>
@@ -126,9 +138,15 @@ T_USAGE = """{% extends "base" %}{% block body %}<h2>{{ t.name }}: messaging wal
 <div class="card"><b>Recent activity</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th></tr>
 {% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
+def _rate_txt(micro) -> str:
+    t = f"{Decimal(int(micro or 0)) / Decimal(1_000_000):f}".rstrip("0").rstrip(".")
+    return t or "0"
+
+
 env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
+env.filters["rate"] = _rate_txt
 env.globals["fmt"] = money.format_micro
 
 
@@ -164,6 +182,19 @@ def ui_tenant(tid: str, user: str = Depends(staff), db: Session = Depends(get_db
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
     led = db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at.desc()).limit(50)).all()
     return render("tenant", user, staff=True, t=t, s=ts.summary(db, t), ledger=led, csrf=csrf_token(user), key=uuid.uuid4().hex)
+
+
+@router.post("/ui/tenants/{tid}/notify")
+def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), whatsapp: str = Form(""), email: str = Form(""), csrf: str = Form(...),
+                     user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import notify as nf
+    check_csrf(user, csrf)
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    nf.set_conf(t, report=report == "1", low=low == "1", whatsapp=[x for x in whatsapp.split(",") if x.strip()], email=[x for x in email.split(",") if x.strip()])
+    ts.audit(db, user, "tenant.notify_set", t.id, {"report": t.notify["report_enabled"], "low": t.notify["low_balance_enabled"],
+                                                   "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
+    db.commit()
+    return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",
@@ -256,11 +287,22 @@ def ui_unsuspend(tid: str, csrf: str = Form(...), user: str = Depends(staff), db
 
 
 @router.get("/ui/rates", response_class=HTMLResponse)
-def ui_rates(user: str = Depends(staff), db: Session = Depends(get_db)):
+def ui_rates(q: str = "", per: str = "20", page: int = 1, user: str = Depends(staff), db: Session = Depends(get_db)):
+    from sqlalchemy import func, or_
     fx_rows = db.scalars(select(FxRate).order_by(FxRate.effective_from.desc()).limit(200)).all()
     approved = {f.approves_id for f in fx_rows if f.approves_id}
-    return render("rates", user, staff=True, csrf=csrf_token(user), approved=approved, fx=fx_rows,
-                  rates=db.scalars(select(RateCard).order_by(RateCard.category, RateCard.market, RateCard.effective_from.desc())).all())
+    base = select(RateCard)
+    qq = q.strip()
+    if qq:
+        base = base.where(or_(RateCard.market == qq.upper(), RateCard.category == qq.lower()))
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    per = per if per in ("10", "20", "50", "all") else "20"
+    size = total or 1 if per == "all" else int(per)
+    pages = max(1, -(-total // size)) if total else 1
+    page = min(max(1, page), pages)
+    rows = db.scalars(base.order_by(RateCard.category, RateCard.market, RateCard.effective_from.desc()).offset((page - 1) * size).limit(size)).all()
+    return render("rates", user, staff=True, csrf=csrf_token(user), approved=approved, fx=fx_rows, rates=rows, q=qq, per=per, page=page,
+                  pages=pages, total=total)
 
 
 @router.post("/ui/rates")

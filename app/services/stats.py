@@ -83,7 +83,7 @@ def _chatwoot_part(t: Tenant, chans: list[dict], since, until, rep: ChatwootRepo
 
 def _whatsapp_billing(db: Session, t: Tenant, since, until, currency: str) -> dict:
     rows = db.execute(
-        select(UsageRecord.category, func.count(), func.coalesce(func.sum(UsageRecord.charge_micro), 0))
+        select(UsageRecord.category, func.coalesce(func.sum(UsageRecord.quantity), 0), func.coalesce(func.sum(UsageRecord.charge_micro), 0))
         .where(UsageRecord.tenant_id == t.id, UsageRecord.channel == "whatsapp",
                UsageRecord.created_at >= since, UsageRecord.created_at <= until)
         .group_by(UsageRecord.category)).all()
