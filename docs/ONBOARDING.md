@@ -103,3 +103,7 @@ Then, per client:
 - A bot reply on WhatsApp: **service** message, charged at send time.
 - A template your workflows send: charged as the category the workflow declares (utility or marketing). Meta's daily numbers correct small mismatches between categories.
 - Anything agents type or Campaigns send: charged by the daily Meta job.
+
+## Note on variables
+`docker-compose.yml` passes every setting to the hub container by name. If you add a new setting to the code, add it there too, or the container never sees it.
+The workflow files and a ready-to-paste variable list are in `ENV-copy-paste.md`.
