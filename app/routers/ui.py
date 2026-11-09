@@ -95,6 +95,9 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div><label>Emails (comma separated)</label><input name="email" value="{{ (n.get('email') or [])|join(', ') }}"></div>
 <div><button>Save notifications</button></div></div>
 <p class="muted">Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number. Last report week: {{ (n.get('state') or {}).get('report_week', 'none yet') }}.</p></form></div>
+{% if t.status in ('pending','provisioning_failed','cancelled','terminated') %}<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
+<input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2"><div><label>Type the slug <b>{{ t.slug }}</b> to confirm</label><input name="confirm" autocomplete="off" required></div><div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div>
+<p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting). The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>{% endif %}
 {% endblock %}"""
 
 T_RATES = """{% extends "base" %}{% block body %}<h2>Provider rate cards (what Meta charges per message)</h2>
@@ -195,6 +198,18 @@ def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), what
                                                    "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
     db.commit()
     return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
+
+
+@router.post("/ui/tenants/{tid}/delete")
+def ui_tenant_delete(tid: str, confirm: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    check_csrf(user, csrf)
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    try:
+        ts.delete_tenant(db, t, user, confirm.strip())
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    db.commit()
+    return RedirectResponse("/ui", status_code=303)
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",

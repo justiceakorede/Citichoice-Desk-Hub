@@ -82,6 +82,7 @@ class Invoice:
     payments_in: Decimal = Decimal(0)
     payment_methods: list[str] = field(default_factory=list)
     payment_rows: int = 0
+    currency_id: str | None = None
 
 
 def parse_invoice(raw: dict) -> Invoice:
@@ -91,7 +92,12 @@ def parse_invoice(raw: dict) -> Invoice:
     inv_id = _first(d, "id", "invoice_id")
     status = str(_first(d, "status", default="")).lower()
     cur = _first(d, "currency_code", "currency")
-    cur = cur.upper() if isinstance(cur, str) and len(cur) == 3 and cur.isalpha() else None   # a numeric WiseCP id is NOT resolved: fail closed
+    cid = _first(d, "currency_id")
+    if cid is None and isinstance(cur, (int, str)) and str(cur).isdigit():
+        cid = cur
+    if cid is None:
+        cid = next((str(it["currency_id"]) for it in (d.get("items") or []) if isinstance(it, dict) and it.get("currency_id")), None)
+    cur = cur.upper() if isinstance(cur, str) and len(cur) == 3 and cur.isalpha() else None   # a bare WiseCP id is resolved by the client, never guessed
     lines = []
     for it in d.get("items") or d.get("lines") or []:
         opts = it.get("options") if isinstance(it.get("options"), dict) else {}
@@ -106,7 +112,8 @@ def parse_invoice(raw: dict) -> Invoice:
     pays = d.get("payments") or []
     paid_in = sum((_d(p.get("amount_in", p.get("amount"))) - _d(p.get("amount_out")) for p in pays), Decimal(0))
     return Invoice(invoice_id=str(inv_id), status=status, currency=cur, total=_d(_first(d, "total", "grand_total")), lines=lines,
-                   payments_in=paid_in, payment_methods=[str(p.get("pmethod", p.get("payment_method", ""))) for p in pays], payment_rows=len(pays))
+                   payments_in=paid_in, payment_methods=[str(p.get("pmethod", p.get("payment_method", ""))) for p in pays], payment_rows=len(pays),
+                   currency_id=str(cid) if cid is not None else None)
 
 
 class WisecpClient:
@@ -130,9 +137,31 @@ class WisecpClient:
         if r.status_code >= 400:
             raise WisecpError(f"http_{r.status_code}")
         try:
-            return parse_invoice(r.json())
+            inv = parse_invoice(r.json())
         except ValueError as e:
             raise WisecpError("bad_payload") from e
+        if inv.currency is None and inv.currency_id:
+            inv.currency = self._currency_code(inv.currency_id)
+        return inv
+
+    def _currency_code(self, currency_id: str) -> str | None:
+        """WiseCP's invoices carry a currency id; ask WiseCP which ISO code that is. None (= held for review) if it cannot say."""
+        try:
+            r = self.http.get(f"{self.base}/api/v1/admin/financial/currencies", headers={"Authorization": f"Bearer {self.key}"})
+            if r.status_code >= 400:
+                return None
+            data = r.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        rows = data.get("data", data) if isinstance(data, dict) else data
+        if isinstance(rows, dict):
+            rows = rows.get("items") or rows.get("currencies") or list(rows.values())
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and str(row.get("id", "")) == str(currency_id):
+                code = _first(row, "code", "currency", "iso", "name")
+                if isinstance(code, str) and len(code) == 3 and code.isalpha():
+                    return code.upper()
+        return None
 
 
 def is_topup_line(line: Line) -> bool:

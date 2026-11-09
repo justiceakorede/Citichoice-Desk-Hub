@@ -164,14 +164,17 @@ def message_prices(db: Session, t: Tenant) -> dict:
     w = wl.get_wallet(db, t.id)
     out = {}
     for cat in rates.CATEGORIES:
-        snap = None
+        snap, why = None, "no_rate"
         for market in (get_settings().price_display_market or None, None):
             try:
-                snap = pricing.price(db, t, w, cat, market, now())
+                snap = pricing.price(db, t, w, cat, market, now(), persist=False)
                 break
-            except pricing.PricingError:
-                continue
+            except pricing.PricingError as e:
+                why = getattr(e, "code", None) or "no_rate"
+            except Exception as e:                     # an FX problem must show as a reason, never as a silent blank
+                why = getattr(e, "code", None) or type(e).__name__
         if snap is None:
+            out[cat] = {"unavailable": str(why)}
             continue
         out[cat] = {"per_message": _unit(snap.unit_charge_micro, w.currency), "free": snap.unit_charge_micro == 0}
     return out

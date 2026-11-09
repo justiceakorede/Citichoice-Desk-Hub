@@ -15,6 +15,7 @@
   notify-run [--force-report] [--dry-run]   send due weekly reports and low-balance alerts (schedule hourly; each is sent once)
   set-notify TENANT [--report on|off] [--low-balance on|off] [--whatsapp 234...,234...] [--email a@b.com,...]
   onboard-check TENANT     checklist of everything a client needs (Chatwoot access, channels, rates, balance, keys, notifications)
+  delete-tenant SLUG --confirm SLUG   permanently delete a cancelled/terminated tenant that has no money history
   list-tenants             show every tenant: id, slug, name, status, WiseCP service, Chatwoot account
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
@@ -62,6 +63,7 @@ def main():
     sn = sub.add_parser("set-notify"); sn.add_argument("tenant"); sn.add_argument("--report", choices=["on", "off"]); sn.add_argument("--low-balance", choices=["on", "off"])
     sn.add_argument("--whatsapp"); sn.add_argument("--email")
     oc = sub.add_parser("onboard-check"); oc.add_argument("tenant")
+    dt_ = sub.add_parser("delete-tenant"); dt_.add_argument("tenant"); dt_.add_argument("--confirm", required=True)
     sub.add_parser("list-tenants")
     rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
@@ -268,6 +270,16 @@ def main():
             line(n["report_enabled"] or n["low_balance_enabled"], f"notifications: report={n['report_enabled']} low-balance={n['low_balance_enabled']} whatsapp={len(n['whatsapp'])} email={len(n['email'])}",
                  f"python -m app.cli set-notify {t.slug} --report on --low-balance on --whatsapp <digits> --email <address>")
             line(bool(S.meta_billing_start), f"META_BILLING_START={S.meta_billing_start or 'unset'}", "set it in Coolify (YYYY-MM-DD)")
+        elif a.cmd == "delete-tenant":
+            t = db.scalar(select(Tenant).where((Tenant.id == a.tenant) | (Tenant.slug == a.tenant)))
+            if not t:
+                raise SystemExit("tenant not found (python -m app.cli list-tenants)")
+            try:
+                ts.delete_tenant(db, t, "cli", a.confirm)
+            except ValueError as e:
+                raise SystemExit(f"refused: {e}")
+            db.commit()
+            print("deleted")
         elif a.cmd == "list-tenants":
             for t in db.scalars(select(Tenant).order_by(Tenant.created_at)):
                 print(f"{t.id}  slug={t.slug}  name={t.name!r}  status={t.status}  wisecp_service={t.wisecp_service_id}  chatwoot_account={t.chatwoot_account_id}")

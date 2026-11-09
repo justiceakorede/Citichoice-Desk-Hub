@@ -48,7 +48,7 @@ def propose(db: Session, tenant: Tenant, *, kind: str, amount, usage_external_id
                           reason=reason[:300], evidence_ref=evidence_ref[:200], status="pending", requested_by=actor)
     db.add(r)
     db.flush()
-    ts.audit(db, actor, "adjustment.request", tenant.id, {"id": r.id, "kind": kind, "amount_micro": micro, "currency": w.currency,
+    ts.audit(db, actor, "adjustment.request", tenant.id, {"id": r.id, "kind": kind, "amount": money.format_micro(micro, w.currency), "amount_micro": micro, "currency": w.currency,
                                                           "reason": r.reason, "evidence": r.evidence_ref})
     return r
 
@@ -98,14 +98,18 @@ def decide(db: Session, request_id: str, actor: str, approve: bool, note: str | 
     if approve:
         own = actor == r.requested_by
         if own and r.amount_micro > self_approval_limit_micro(db, r.currency):
-            raise AdjustmentError("needs_second_approver", "a different person must approve this request")
+            why = ""
+            if get_settings().adjustment_self_approval_limit_usd > 0 and self_approval_limit_micro(db, r.currency) == 0:
+                why = (f" (your self-approval limit is set, but the exchange rate for {r.currency} is missing or older than "
+                       f"{get_settings().fx_max_age_hours} hours, so it cannot be applied: run `python -m app.cli fx-sync` and schedule it)")
+            raise AdjustmentError("needs_second_approver", "a different person must approve this request" + why)
         _execute(db, r)
         r.status, r.self_approved = "posted", own
     else:
         r.status = "rejected"
     r.decided_by, r.decided_at, r.decision_note = actor, now(), (note or "")[:300] or None
     ts.audit(db, actor, "adjustment.approve" if approve else "adjustment.reject", r.tenant_id,
-             {"id": r.id, "kind": r.kind, "amount_micro": r.amount_micro, "currency": r.currency, "requested_by": r.requested_by,
+             {"id": r.id, "kind": r.kind, "amount": money.format_micro(r.amount_micro, r.currency), "amount_micro": r.amount_micro, "currency": r.currency, "requested_by": r.requested_by,
               "self_approved": r.self_approved, "note": r.decision_note})
     db.flush()
     return r
