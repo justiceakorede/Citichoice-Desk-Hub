@@ -71,10 +71,10 @@ def customer_view(db: Session, t: Tenant) -> dict:
     return {k: v for k, v in summary(db, t).items() if k not in CUSTOMER_HIDDEN}
 
 
-DELETABLE = ("pending", "provisioning_failed", "cancelled", "terminated")
+DELETABLE = ("pending", "provisioning_failed", "cancelling", "cancelled", "terminated")
 
 
-def delete_tenant(db, t, actor: str, confirm: str) -> None:
+def delete_tenant(db, t, actor: str, confirm: str, purge_history: bool = False) -> None:
     """Manual, permanent removal of a tenant row and everything that hangs off it (wallet, channels, jobs, settings, key links).
     Refused when the tenant has money history (ledger, usage, adjustments, receivables): that is accounting and is kept.
     The audit trail is kept too. The Chatwoot account is NOT touched."""
@@ -84,10 +84,16 @@ def delete_tenant(db, t, actor: str, confirm: str) -> None:
         raise ValueError("confirmation_required: type the tenant slug to confirm")
     if t.status not in DELETABLE:
         raise ValueError(f"status_{t.status}: only {', '.join(DELETABLE)} tenants can be deleted. Cancel the service first.")
+    counts = {}
     for model, name in ((LedgerEntry, "wallet ledger"), (UsageRecord, "usage"), (AdjustmentRequest, "adjustments"), (ReceivableEntry, "receivables")):
-        if db.scalar(select(func.count()).select_from(model).where(model.tenant_id == t.id)):
-            raise ValueError(f"has_history: this tenant has {name} records, which are kept for accounting. Leave it cancelled or terminated instead.")
-    audit(db, actor, "tenant.delete", t.id, {"slug": t.slug, "name": t.name, "wisecp_service_id": t.wisecp_service_id, "status": t.status})
+        n = db.scalar(select(func.count()).select_from(model).where(model.tenant_id == t.id)) or 0
+        if n:
+            counts[name] = n
+    if counts and not purge_history:
+        raise ValueError("has_history: this tenant has " + ", ".join(f"{v} {k} record(s)" for k, v in counts.items()) +
+                         ", which are kept for accounting. Leave it cancelled, or confirm the permanent purge of its money history (test tenants only).")
+    audit(db, actor, "tenant.delete", t.id, {"slug": t.slug, "name": t.name, "wisecp_service_id": t.wisecp_service_id, "status": t.status,
+                                                         "purged_money_history": counts if purge_history else {}})
     for table in reversed(Base.metadata.sorted_tables):
         if table.name in ("audit_log", "tenants") or "tenant_id" not in table.c:
             continue

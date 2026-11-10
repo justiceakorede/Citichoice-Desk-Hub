@@ -82,15 +82,23 @@ def _chatwoot_part(t: Tenant, chans: list[dict], since, until, rep: ChatwootRepo
 
 
 def _whatsapp_billing(db: Session, t: Tenant, since, until, currency: str) -> dict:
+    from ..models import AdjustmentRequest, UsageReversal
     rows = db.execute(
         select(UsageRecord.category, func.coalesce(func.sum(UsageRecord.quantity), 0), func.coalesce(func.sum(UsageRecord.charge_micro), 0))
         .where(UsageRecord.tenant_id == t.id, UsageRecord.channel == "whatsapp",
                UsageRecord.created_at >= since, UsageRecord.created_at <= until)
         .group_by(UsageRecord.category)).all()
     by_cat = {c: {"delivered": int(n), "charged_micro": int(ch), "charged": money.format_micro(int(ch), currency)} for c, n, ch in rows}
-    total_ch = sum(v["charged_micro"] for v in by_cat.values())
+    manual = int(db.scalar(select(func.coalesce(func.sum(AdjustmentRequest.amount_micro), 0)).where(
+        AdjustmentRequest.tenant_id == t.id, AdjustmentRequest.kind == "manual_charge", AdjustmentRequest.status == "posted",
+        AdjustmentRequest.decided_at >= since, AdjustmentRequest.decided_at <= until)) or 0)
+    reversed_ = int(db.scalar(select(func.coalesce(func.sum(UsageReversal.amount_micro), 0)).join(UsageRecord, UsageRecord.id == UsageReversal.usage_id).where(
+        UsageRecord.tenant_id == t.id, UsageReversal.created_at >= since, UsageReversal.created_at <= until)) or 0)
+    # What the customer was charged: automatic usage, plus manual charges staff added, minus usage staff reversed.
+    total_ch = max(0, sum(v["charged_micro"] for v in by_cat.values()) + manual - reversed_)
     return {"delivered_messages": sum(v["delivered"] for v in by_cat.values()), "charged_micro": total_ch,
-            "charged": money.format_micro(total_ch, currency), "by_category": by_cat}
+            "charged": money.format_micro(total_ch, currency), "by_category": by_cat,
+            "manual_charges": money.format_micro(manual, currency), "reversals": money.format_micro(reversed_, currency)}
 
 
 def tenant_stats(db: Session, t: Tenant, ranges: list[str], rep: ChatwootReports) -> dict:

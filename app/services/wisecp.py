@@ -234,7 +234,7 @@ def process_invoice(db: Session, inv: Invoice, actor: str) -> dict:
         if amount <= 0:
             results.append({**res, "result": "skipped", "reason": "zero_amount"}); continue
         micro = money.input_to_micro(amount, w.currency)
-        p = wl.credit(db, t.id, micro, key, kind="topup", reference=f"wisecp invoice {inv.invoice_id} line {line.line_id}", currency=w.currency,
+        p = wl.credit(db, t.id, micro, key, kind="credit", reference=f"wisecp invoice {inv.invoice_id} line {line.line_id}", currency=w.currency,
                       meta={"source": "wisecp", "invoice_id": inv.invoice_id, "line_id": line.line_id, "tax_excluded": True, **flags})
         if p.created:
             ts.audit(db, actor, "topup.credit", t.id, {"invoice": inv.invoice_id, "line": line.line_id, "amount_micro": micro, **flags})

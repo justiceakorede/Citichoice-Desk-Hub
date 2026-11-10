@@ -45,8 +45,28 @@ button{background:var(--accent);border-color:var(--accent);color:#fff;cursor:poi
 form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}.grid2 label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}.grid2 input,.grid2 select{width:100%}
 @media(max-width:640px){main{margin-top:12px}.big{font-size:22px}th,td{padding:8px}}
-</style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/audit">Audit</a><span style="margin-left:auto;color:#9aa4b8">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form>{% endif %}</header>
+header .links{display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;flex:1}header .who{margin-left:auto;color:#9aa4b8}
+.navtoggle{display:none}.burger{display:none;margin-left:auto;font-size:24px;line-height:1;cursor:pointer;padding:2px 10px;border-radius:8px;color:#fff}.burger:hover{background:#ffffff1a}
+@media(max-width:820px){.burger{display:block}header .links{display:none;flex-direction:column;align-items:stretch;width:100%;flex:none;gap:2px;padding:6px 0}.navtoggle:checked ~ .links{display:flex}
+header .links a{padding:10px 12px}header .who{margin:6px 12px}header .links form{margin:4px 12px !important}main{padding:0 10px 40px}.row{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.row{grid-template-columns:1fr}h2{font-size:18px}.card{padding:14px}}
+.kpi{font-size:28px;font-weight:650;letter-spacing:-.02em}.kpi small{font-size:13px;font-weight:500;color:var(--muted)}
+</style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Menu"><label for="navtoggle" class="burger" title="Menu">&#9776;</label>
+<nav class="links"><a href="/ui/overview">Overview</a><a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/audit">Audit</a>
+<span class="who">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form></nav>{% endif %}</header>
 <main>{% block body %}{% endblock %}</main></body></html>"""
+
+T_OVERVIEW = """{% extends "base" %}{% block body %}<h2>Overview</h2>
+<div class="row">
+<div class="card"><div class="muted">Customers</div><div class="kpi">{{ counts.get('active', 0) }} <small>active</small></div><div class="muted">{{ counts.get('suspended', 0) }} suspended &middot; {{ counts.get('cancelling', 0) + counts.get('cancelled', 0) }} cancelled &middot; {{ counts.get('provisioning_failed', 0) + counts.get('pending', 0) }} need attention</div></div>
+<div class="card"><div class="muted">Messages this month</div><div class="kpi">{{ '{:,}'.format(msgs) }}</div><div class="muted">billed WhatsApp messages (all customers)</div></div>
+<div class="card"><div class="muted">Waiting for you</div><div class="kpi">{{ pending_adj + bad_jobs }}</div><div class="muted"><a href="/ui/adjustments">{{ pending_adj }} adjustment(s)</a> &middot; {{ bad_jobs }} stuck job(s)</div></div>
+<div class="card"><div class="muted">Last runs</div><div>FX rates: <b>{{ fx_at }}</b></div><div>Meta billing: <b>{{ meta_at }}</b></div></div>
+</div>
+<h2>Customer wallets</h2><div class="tablewrap"><table><tr><th>Currency</th><th>Customers</th><th>Total credit</th><th>Total owed</th><th>Spent this month</th></tr>
+{% for r in wallets %}<tr><td>{{ r.cur }}</td><td>{{ r.n }}</td><td>{{ r.balance }}</td><td>{{ r.owed }}</td><td>{{ r.spent }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No wallets yet.</td></tr>{% endfor %}</table></div>
+<h2>Needs attention</h2><div class="tablewrap"><table><tr><th>Customer</th><th>Status</th><th>Credit</th><th>Alert</th></tr>
+{% for r in attention %}<tr><td><a href="/ui/tenants/{{ r.id }}">{{ r.name }}</a></td><td><span class="pill {{ r.status }}">{{ r.status }}</span></td><td>{{ r.balance }}</td><td class="{{ r.alert }}">{{ r.alert }}</td></tr>{% else %}<tr><td colspan="4" class="muted">Everyone is fine.</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 T_PLANS = """{% extends "base" %}{% block body %}<h2>Plans</h2>
 <p class="muted">What each plan allows. Changing a plan applies to every customer on it who has no custom override, and updates their Chatwoot limits within a minute. Leave a number blank only if every customer on that plan has an override.</p>
@@ -87,7 +107,10 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div class="card"><b>This month</b><table><tr><th>Category</th><th>Messages</th><th>Provider cost</th><th>FX buffer</th><th>Service fee</th><th>Charged</th></tr>
 {% for c,v in s.month_usage.items() %}<tr><td>{{ c }}</td><td>{{ v.messages }}</td><td>{{ fmt(v.provider_cost_micro, s.wallet.currency) }}</td><td>{{ fmt(v.fx_buffer_micro, s.wallet.currency) }}</td><td>{{ fmt(v.service_fee_micro, s.wallet.currency) }}</td><td>{{ fmt(v.charge_micro, s.wallet.currency) }}</td></tr>{% endfor %}</table></div>
 <div class="card"><b>Ledger</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th><th>Reference</th></tr>
-{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
+{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>AI replies: manual correction</h2><div class="card"><form class="inline" method="post" action="/ui/tenants/{{ t.id }}/ai-adjust"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input name="delta" inputmode="numeric" placeholder="+50 or -20" required style="width:130px"><input name="reason" placeholder="Reason (kept in the audit)" required style="min-width:260px"><button>Apply</button></form>
+<p class="muted">Adds to (or with a minus sign gives back) this month's AI-reply count. New replies keep counting normally on top of it.</p></div>
+<h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
 <div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Weekly report</label></div>
 <div><label><input type="checkbox" name="low" value="1" {{ 'checked' if n.get('low_balance_enabled') }}> Low-balance alert</label></div>
@@ -95,9 +118,9 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div><label>Emails (comma separated)</label><input name="email" value="{{ (n.get('email') or [])|join(', ') }}"></div>
 <div><button>Save notifications</button></div></div>
 <p class="muted">Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number. Last report week: {{ (n.get('state') or {}).get('report_week', 'none yet') }}.</p></form></div>
-{% if t.status in ('pending','provisioning_failed','cancelled','terminated') %}<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
-<input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2"><div><label>Type the slug <b>{{ t.slug }}</b> to confirm</label><input name="confirm" autocomplete="off" required></div><div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div>
-<p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting). The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>{% endif %}
+{% if t.status in ('pending','provisioning_failed','cancelling','cancelled','terminated') %}<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
+<input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2"><div><label>Type the slug <b>{{ t.slug }}</b> to confirm</label><input name="confirm" autocomplete="off" required></div><div><label>Only if it has money history (test tenants): type DELETE-HISTORY</label><input name="purge" autocomplete="off"></div><div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div>
+<p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting) unless you type DELETE-HISTORY, which erases that history too. The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>{% endif %}
 {% endblock %}"""
 
 T_RATES = """{% extends "base" %}{% block body %}<h2>Provider rate cards (what Meta charges per message)</h2>
@@ -146,7 +169,7 @@ def _rate_txt(micro) -> str:
     return t or "0"
 
 
-env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS,
+env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
 env.filters["rate"] = _rate_txt
@@ -201,15 +224,69 @@ def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), what
 
 
 @router.post("/ui/tenants/{tid}/delete")
-def ui_tenant_delete(tid: str, confirm: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+def ui_tenant_delete(tid: str, confirm: str = Form(""), purge: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
     check_csrf(user, csrf)
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
     try:
-        ts.delete_tenant(db, t, user, confirm.strip())
+        ts.delete_tenant(db, t, user, confirm.strip(), purge_history=purge.strip() == "DELETE-HISTORY")
     except ValueError as e:
         raise HTTPException(409, str(e))
     db.commit()
     return RedirectResponse("/ui", status_code=303)
+
+
+@router.post("/ui/tenants/{tid}/ai-adjust")
+def ui_ai_adjust(tid: str, delta: str = Form(...), reason: str = Form(...), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import ai_allowance
+    check_csrf(user, csrf)
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    try:
+        d = int(delta.strip().replace("+", ""))
+    except ValueError:
+        raise HTTPException(422, "delta must be a whole number such as 50 or -20")
+    if d == 0 or abs(d) > 1_000_000:
+        raise HTTPException(422, "delta must be between -1,000,000 and 1,000,000 and not zero")
+    try:
+        c, created, used = ai_allowance.adjust(db, t.id, d, f"ui:{uid()}", reason.strip()[:200])
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    ts.audit(db, user, "ai.adjust", t.id, {"delta": d, "reason": reason.strip()[:200], "period": c.period, "used": used})
+    db.commit()
+    return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
+
+
+@router.get("/ui/overview", response_class=HTMLResponse)
+def ui_overview(user: str = Depends(staff), db: Session = Depends(get_db)):
+    import datetime as dt_
+    from sqlalchemy import func
+    from .. import money
+    from ..models import AdjustmentRequest, ProvisioningJob, UsageRecord, Wallet
+    from ..services import tenants as ts_
+    from ..services.periods import period_start_utc
+    counts = dict(db.execute(select(Tenant.status, func.count()).group_by(Tenant.status)).all())
+    start = period_start_utc(now())
+    msgs = int(db.scalar(select(func.coalesce(func.sum(UsageRecord.quantity), 0)).where(UsageRecord.created_at >= start)) or 0)
+    spent = dict(db.execute(select(UsageRecord.customer_currency, func.coalesce(func.sum(UsageRecord.charge_micro), 0)).where(UsageRecord.created_at >= start)
+                            .group_by(UsageRecord.customer_currency)).all())
+    wallets = []
+    for cur, n, bal, owed in db.execute(select(Wallet.currency, func.count(), func.coalesce(func.sum(Wallet.balance_micro), 0), func.coalesce(func.sum(Wallet.receivable_micro), 0))
+                                         .group_by(Wallet.currency)).all():
+        wallets.append({"cur": cur, "n": n, "balance": money.format_micro(int(bal), cur), "owed": money.format_micro(int(owed), cur),
+                        "spent": money.format_micro(int(spent.get(cur, 0)), cur)})
+    attention = []
+    for t in db.scalars(select(Tenant).where(Tenant.status.not_in(("terminated", "cancelled")))).all():
+        try:
+            w = ts_.customer_view(db, t)["wallet"]
+        except Exception:
+            continue
+        if t.status != "active" or (w["alert"] or "ok") != "ok":
+            attention.append({"id": t.id, "name": t.name, "status": t.status, "balance": w["balance"], "alert": w["alert"] or "ok"})
+    fx_row = db.scalar(select(AuditLog).where(AuditLog.action == "fx.sync").order_by(AuditLog.created_at.desc()).limit(1))
+    mb_row = db.scalar(select(AuditLog).where(AuditLog.action == "meta.billing_sync").order_by(AuditLog.created_at.desc()).limit(1))
+    fmt = lambda r: r.created_at.strftime("%Y-%m-%d %H:%M UTC") if r else "never"
+    return render("overview", user, staff=True, counts=counts, msgs=msgs, wallets=wallets, attention=attention, fx_at=fmt(fx_row), meta_at=fmt(mb_row),
+                  pending_adj=db.scalar(select(func.count()).select_from(AdjustmentRequest).where(AdjustmentRequest.status == "pending")) or 0,
+                  bad_jobs=db.scalar(select(func.count()).select_from(ProvisioningJob).where(ProvisioningJob.status.in_(("blocked", "dead")))) or 0)
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",
