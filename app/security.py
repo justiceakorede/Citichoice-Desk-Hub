@@ -15,8 +15,11 @@ def hash_key(k: str) -> str:
     return hashlib.sha256(k.encode()).hexdigest()
 
 
+_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"   # no 0/O, 1/l/I: keys get retyped and read off screens
+
+
 def new_key() -> str:
-    return "chd_" + secrets.token_urlsafe(32)
+    return "chd_" + "".join(secrets.choice(_KEY_ALPHABET) for _ in range(40))
 
 
 def client_ip(request: Request) -> str:

@@ -18,6 +18,7 @@
   cancel-tenant SLUG        cancel a subscription (locks the workspace; ends in 'cancelled')
   force-cancelled SLUG --reason TEXT   mark a tenant stuck in 'cancelling' as cancelled WITHOUT locking Chatwoot (you do that by hand)
   delete-tenant SLUG --confirm SLUG [--purge-history]   permanently delete a stuck/cancelled/terminated tenant (money history is kept unless purged)
+  check-key 'chd_...'      tell whether a key text is valid and what it belongs to; repairs 0/O and 1/l/I typing mix-ups
   list-tenants             show every tenant: id, slug, name, status, WiseCP service, Chatwoot account
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
   add-reporter USER_ID     add the Chatwoot reporter user (stats) as administrator of every active tenant workspace (idempotent; run after each new tenant)
@@ -68,6 +69,7 @@ def main():
     dt_ = sub.add_parser("delete-tenant"); dt_.add_argument("tenant"); dt_.add_argument("--confirm", required=True); dt_.add_argument("--purge-history", action="store_true")
     ct_ = sub.add_parser("cancel-tenant"); ct_.add_argument("tenant")
     fc_ = sub.add_parser("force-cancelled"); fc_.add_argument("tenant"); fc_.add_argument("--reason", required=True)
+    ck_ = sub.add_parser("check-key"); ck_.add_argument("key")
     sub.add_parser("list-tenants")
     rj = sub.add_parser("retry-job"); rj.add_argument("job_id")
     ar = sub.add_parser("add-reporter"); ar.add_argument("user_id", type=int)
@@ -309,6 +311,31 @@ def main():
                 raise SystemExit(f"refused: {e}")
             db.commit()
             print("deleted")
+        elif a.cmd == "check-key":
+            import itertools
+            raw = a.key.strip()
+            lookup = lambda k: db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_key(k)))
+            found, fixed = lookup(raw), None
+            if not found:
+                groups = {"0": "0O", "O": "0O", "1": "1lI", "l": "1lI", "I": "1lI"}
+                pos = [i for i, c in enumerate(raw) if c in groups]
+                if len(pos) <= 12:
+                    for combo in itertools.product(*[groups[raw[i]] for i in pos]):
+                        cand = list(raw)
+                        for i, c in zip(pos, combo):
+                            cand[i] = c
+                        cand = "".join(cand)
+                        found = lookup(cand)
+                        if found:
+                            fixed = cand
+                            break
+            if not found:
+                raise SystemExit("NO KEY MATCHES this text (not even after trying 0/O and 1/l/I swaps). It is wrong, cut off, or from another system. Create a new key with create-key and copy it, do not retype it.")
+            slugs = [t_.slug for t_ in db.scalars(select(Tenant).join(ApiKeyTenant, ApiKeyTenant.tenant_id == Tenant.id).where(ApiKeyTenant.api_key_id == found.id))]
+            print(f"MATCH: key '{found.name}' scopes={found.scopes} tenants={slugs} revoked={found.revoked} expires={found.expires_at}")
+            if fixed:
+                print("The text you gave had look-alike characters wrong (0/O or 1/l/I). Use exactly this instead:")
+                print(fixed)
         elif a.cmd == "list-tenants":
             for t in db.scalars(select(Tenant).order_by(Tenant.created_at)):
                 print(f"{t.id}  slug={t.slug}  name={t.name!r}  status={t.status}  wisecp_service={t.wisecp_service_id}  chatwoot_account={t.chatwoot_account_id}")
