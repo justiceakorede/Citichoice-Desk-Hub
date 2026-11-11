@@ -56,6 +56,12 @@ header .links a{padding:10px 12px}header .who{margin:6px 12px}header .links form
 <span class="who">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form></nav>{% endif %}</header>
 <main>{% block body %}{% endblock %}</main></body></html>"""
 
+T_BROKEN = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="pill {{ t.status }}">{{ t.status }}</span></h2>
+<div class="card"><b>This tenant's details could not be loaded.</b><p class="muted">{{ err }}</p><p>The hub log has the full error. You can still remove the tenant below.</p></div>
+<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
+<div><label>Type the slug <b>{{ t.slug }}</b></label><input name="confirm" autocomplete="off" required></div><div><label>Type DELETE-HISTORY to erase credit and money history too</label><input name="purge" autocomplete="off"></div>
+<div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div></form></div>{% endblock %}"""
+
 T_OVERVIEW = """{% extends "base" %}{% block body %}<h2>Overview</h2>
 <div class="row">
 <div class="card"><div class="muted">Customers</div><div class="kpi">{{ counts.get('active', 0) }} <small>active</small></div><div class="muted">{{ counts.get('suspended', 0) }} suspended &middot; {{ counts.get('cancelling', 0) + counts.get('cancelled', 0) }} cancelled &middot; {{ counts.get('provisioning_failed', 0) + counts.get('pending', 0) }} need attention</div></div>
@@ -107,7 +113,13 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div class="card"><b>This month</b><table><tr><th>Category</th><th>Messages</th><th>Provider cost</th><th>FX buffer</th><th>Service fee</th><th>Charged</th></tr>
 {% for c,v in s.month_usage.items() %}<tr><td>{{ c }}</td><td>{{ v.messages }}</td><td>{{ fmt(v.provider_cost_micro, s.wallet.currency) }}</td><td>{{ fmt(v.fx_buffer_micro, s.wallet.currency) }}</td><td>{{ fmt(v.service_fee_micro, s.wallet.currency) }}</td><td>{{ fmt(v.charge_micro, s.wallet.currency) }}</td></tr>{% endfor %}</table></div>
 <div class="card"><b>Ledger</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th><th>Reference</th></tr>
-{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>AI replies: manual correction</h2><div class="card"><form class="inline" method="post" action="/ui/tenants/{{ t.id }}/ai-adjust"><input type="hidden" name="csrf" value="{{ csrf }}">
+{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>WhatsApp usage: manual correction</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/manual-usage"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
+<div><label>Messages (+ add, - take back)</label><input name="messages" inputmode="numeric" placeholder="+25 or -10" required></div>
+<div><label>Category</label><select name="category"><option>service</option><option>utility</option><option>marketing</option><option>authentication</option></select></div>
+<div><label>Country (blank = default)</label><input name="country" maxlength="2" placeholder="NG" style="text-transform:uppercase"></div>
+<div><label>Reason</label><input name="reason" required></div><div><button>Apply</button></div></div>
+<p class="muted">Prices the messages like automatic billing, then debits (or refunds) the wallet and adds (or removes) the messages and their cost in the totals. Automatic billing keeps adding on top.</p></form></div>
+<h2>AI replies: manual correction</h2><div class="card"><form class="inline" method="post" action="/ui/tenants/{{ t.id }}/ai-adjust"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input name="delta" inputmode="numeric" placeholder="+50 or -20" required style="width:130px"><input name="reason" placeholder="Reason (kept in the audit)" required style="min-width:260px"><button>Apply</button></form>
 <p class="muted">Adds to (or with a minus sign gives back) this month's AI-reply count. New replies keep counting normally on top of it.</p></div>
 <h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
@@ -118,9 +130,9 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <div><label>Emails (comma separated)</label><input name="email" value="{{ (n.get('email') or [])|join(', ') }}"></div>
 <div><button>Save notifications</button></div></div>
 <p class="muted">Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number. Last report week: {{ (n.get('state') or {}).get('report_week', 'none yet') }}.</p></form></div>
-{% if t.status in ('pending','provisioning_failed','cancelling','cancelled','terminated') %}<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
+<h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2"><div><label>Type the slug <b>{{ t.slug }}</b> to confirm</label><input name="confirm" autocomplete="off" required></div><div><label>Only if it has money history (test tenants): type DELETE-HISTORY</label><input name="purge" autocomplete="off"></div><div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div>
-<p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting) unless you type DELETE-HISTORY, which erases that history too. The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>{% endif %}
+<p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting) unless you type DELETE-HISTORY, which erases that history too. The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>
 {% endblock %}"""
 
 T_RATES = """{% extends "base" %}{% block body %}<h2>Provider rate cards (what Meta charges per message)</h2>
@@ -169,7 +181,7 @@ def _rate_txt(micro) -> str:
     return t or "0"
 
 
-env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW,
+env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW, "tenant_broken": T_BROKEN,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
 env.filters["rate"] = _rate_txt
@@ -205,9 +217,15 @@ def ui_home(user: str = Depends(staff), db: Session = Depends(get_db)):
 
 @router.get("/ui/tenants/{tid}", response_class=HTMLResponse)
 def ui_tenant(tid: str, user: str = Depends(staff), db: Session = Depends(get_db)):
+    import logging
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
-    led = db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at.desc()).limit(50)).all()
-    return render("tenant", user, staff=True, t=t, s=ts.summary(db, t), ledger=led, csrf=csrf_token(user), key=uuid.uuid4().hex)
+    try:
+        led = db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at.desc()).limit(50)).all()
+        return render("tenant", user, staff=True, t=t, s=ts.summary(db, t), ledger=led, csrf=csrf_token(user), key=uuid.uuid4().hex)
+    except Exception as e:                                      # a damaged tenant must never lock you out of removing it
+        logging.getLogger("deskhub.ui").exception("tenant page failed for %s", tid)
+        db.rollback()
+        return render("tenant_broken", user, staff=True, t=t, err=f"{type(e).__name__}: {str(e)[:300]}", csrf=csrf_token(user))
 
 
 @router.post("/ui/tenants/{tid}/notify")
@@ -287,6 +305,21 @@ def ui_overview(user: str = Depends(staff), db: Session = Depends(get_db)):
     return render("overview", user, staff=True, counts=counts, msgs=msgs, wallets=wallets, attention=attention, fx_at=fmt(fx_row), meta_at=fmt(mb_row),
                   pending_adj=db.scalar(select(func.count()).select_from(AdjustmentRequest).where(AdjustmentRequest.status == "pending")) or 0,
                   bad_jobs=db.scalar(select(func.count()).select_from(ProvisioningJob).where(ProvisioningJob.status.in_(("blocked", "dead")))) or 0)
+
+
+@router.post("/ui/tenants/{tid}/manual-usage")
+def ui_manual_usage(tid: str, messages: str = Form(...), category: str = Form(...), country: str = Form(""), reason: str = Form(...), csrf: str = Form(...),
+                    user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import manual_usage
+    check_csrf(user, csrf)
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    try:
+        n = int(messages.strip().replace("+", ""))
+        manual_usage.record(db, t, user, n, category, country, reason)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    db.commit()
+    return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",
