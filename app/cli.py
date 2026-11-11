@@ -18,6 +18,7 @@
   cancel-tenant SLUG        cancel a subscription (locks the workspace; ends in 'cancelled')
   force-cancelled SLUG --reason TEXT   mark a tenant stuck in 'cancelling' as cancelled WITHOUT locking Chatwoot (you do that by hand)
   delete-tenant SLUG --confirm SLUG [--purge-history]   permanently delete a stuck/cancelled/terminated tenant (money history is kept unless purged)
+  rekey NAME --key 'TEXT'   make an EXISTING key answer to the exact text you already put in n8n (no copying from the terminal)
   check-key 'chd_...'      tell whether a key text is valid and what it belongs to; repairs 0/O and 1/l/I typing mix-ups
   list-tenants             show every tenant: id, slug, name, status, WiseCP service, Chatwoot account
   retry-job JOB_ID         requeue a dead/blocked provisioning job (after fixing its cause)
@@ -49,7 +50,8 @@ def main():
     k = sub.add_parser("create-key")
     k.add_argument("name"); k.add_argument("--scope", required=True, choices=["admin", "internal"])
     k.add_argument("--tenant", action="append", default=[]); k.add_argument("--ip", action="append", default=[])
-    k.add_argument("--days", type=int, default=365)
+    k.add_argument("--days", type=int, default=365); k.add_argument("--key", help="use this exact key text instead of generating one (32+ characters: letters, digits, - and _)")
+    rkk = sub.add_parser("rekey"); rkk.add_argument("name"); rkk.add_argument("--key", required=True)
     sub.add_parser("expire-reservations"); sub.add_parser("list-keys"); rk = sub.add_parser("revoke-key"); rk.add_argument("name")
     w = sub.add_parser("worker"); w.add_argument("--once", action="store_true")
     sub.add_parser("escalate"); sub.add_parser("seed-plans")
@@ -95,7 +97,13 @@ def main():
                 if not t:
                     raise SystemExit(f"tenant not found: {ref}")
                 bound.append(t.id)
-            raw = new_key()
+            raw = a.key.strip() if a.key else new_key()
+            if a.key:
+                import re as _re
+                if not _re.fullmatch(r"[A-Za-z0-9_\-]{32,200}", raw):
+                    raise SystemExit("a key must be 32-200 characters: letters, digits, - and _")
+                if db.scalar(select(ApiKey.id).where(ApiKey.key_hash == hash_key(raw))):
+                    raise SystemExit("that key text is already registered")
             key = ApiKey(name=a.name, key_hash=hash_key(raw), scopes=[a.scope], allowed_ips=a.ip,
                          expires_at=now() + dt.timedelta(days=a.days))
             db.add(key); db.flush()
@@ -103,7 +111,7 @@ def main():
                 db.add(ApiKeyTenant(api_key_id=key.id, tenant_id=tid))
             ts.audit(db, "cli", "apikey.create", None, {"name": a.name, "scope": a.scope, "tenants": bound})
             db.commit()
-            print("Key (shown once, store it now):", raw)
+            print("Key registered (the text you supplied)." if a.key else "Key (shown once, store it now): " + raw)
         elif a.cmd == "expire-reservations":
             from .services import reservations
             n = reservations.expire_due(db)
@@ -311,6 +319,21 @@ def main():
                 raise SystemExit(f"refused: {e}")
             db.commit()
             print("deleted")
+        elif a.cmd == "rekey":
+            import re as _re
+            raw = a.key.strip()
+            if not _re.fullmatch(r"[A-Za-z0-9_\-]{32,200}", raw):
+                raise SystemExit("a key must be 32-200 characters: letters, digits, - and _")
+            key = db.scalar(select(ApiKey).where(ApiKey.name == a.name, ApiKey.revoked.is_(False)))
+            if not key:
+                raise SystemExit(f"no active key named {a.name} (python -m app.cli list-keys)")
+            other = db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_key(raw)))
+            if other and other.id != key.id:
+                raise SystemExit(f"that key text already belongs to '{other.name}'")
+            key.key_hash = hash_key(raw)
+            ts.audit(db, "cli", "apikey.rekey", None, {"name": a.name})
+            db.commit()
+            print(f"'{a.name}' now answers to exactly the text you gave. Put the same text in n8n.")
         elif a.cmd == "check-key":
             import itertools
             raw = a.key.strip()

@@ -245,10 +245,16 @@ def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), what
 def ui_tenant_delete(tid: str, confirm: str = Form(""), purge: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
     check_csrf(user, csrf)
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    import logging
     try:
         ts.delete_tenant(db, t, user, confirm.strip(), purge_history=purge.strip() == "DELETE-HISTORY")
     except ValueError as e:
+        db.rollback()
         raise HTTPException(409, str(e))
+    except Exception as e:                                       # show the real reason instead of a bare "Internal Server Error"
+        logging.getLogger("deskhub.ui").exception("tenant delete failed for %s", tid)
+        db.rollback()
+        raise HTTPException(409, f"delete failed: {type(e).__name__}: {str(e)[:400]}")
     db.commit()
     return RedirectResponse("/ui", status_code=303)
 

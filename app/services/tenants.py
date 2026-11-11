@@ -94,16 +94,34 @@ def delete_tenant(db, t, actor: str, confirm: str, purge_history: bool = False) 
                          ", which are kept for accounting. Leave it cancelled, or confirm the permanent purge of its money history (test tenants only).")
     audit(db, actor, "tenant.delete", t.id, {"slug": t.slug, "name": t.name, "wisecp_service_id": t.wisecp_service_id, "status": t.status,
                                                          "purged_money_history": counts if purge_history else {}})
-    for table in reversed(Base.metadata.sorted_tables):         # children first
+    from sqlalchemy.exc import DBAPIError
+    steps = []
+    for table in reversed(Base.metadata.sorted_tables):         # children first, but we also retry, so ordering mistakes cannot wedge it
         if table.name in ("audit_log", "tenants"):
             continue
         if "tenant_id" in table.c:
-            db.execute(delete(table).where(table.c.tenant_id == t.id))
+            steps.append(delete(table).where(table.c.tenant_id == t.id))
             continue
         for fk in table.foreign_keys:                            # rows that only reach the tenant through a parent (for example usage reversals)
             parent = fk.column.table
             if parent.name != "tenants" and "tenant_id" in parent.c:
-                db.execute(delete(table).where(fk.parent.in_(select(fk.column).where(parent.c.tenant_id == t.id))))
+                steps.append(delete(table).where(fk.parent.in_(select(fk.column).where(parent.c.tenant_id == t.id))))
                 break
-    db.delete(t)
+    steps.append(delete(Tenant.__table__).where(Tenant.__table__.c.id == t.id))
+    last = None
+    for _ in range(8):
+        left = []
+        for stmt in steps:
+            try:
+                with db.begin_nested():
+                    db.execute(stmt)
+            except DBAPIError as e:
+                left.append(stmt)
+                last = e
+        if not left:
+            break
+        steps = left
+    else:
+        raise ValueError("delete_failed: the database refused part of the delete: " + str(getattr(last, "orig", last))[:360])
+    db.expunge(t)
     db.flush()
