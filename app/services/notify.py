@@ -137,13 +137,16 @@ def _report_email(rep: dict) -> tuple[str, str]:
     return f"Your WhatsApp summary for {rep['period']}", "\n".join(lines)
 
 
-def _deliver(n: dict, wa_template: str, wa_params: list[str], subject: str, body: str) -> list[str]:
+def _deliver(db: Session, t: Tenant, kind: str, n: dict, wa_template: str, wa_params: list[str], subject: str, body: str) -> list[str]:
+    from ..models import NotificationLog
     out = []
     for num in n["whatsapp"]:
         ok, why = send_whatsapp(num, wa_template, wa_params)
+        db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="whatsapp", recipient="+" + num, status="sent" if ok else "failed", detail=None if ok else why[:400]))
         out.append(f"whatsapp:{num[-4:]}:{'ok' if ok else why}")
     for addr in n["email"]:
         ok, why = send_email(addr, subject, body)
+        db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="email", recipient=addr, status="sent" if ok else "failed", detail=None if ok else why[:400]))
         out.append(f"email:{addr.split('@')[0][:2]}***:{'ok' if ok else why}")
     return out
 
@@ -160,7 +163,7 @@ def run(db: Session, now: dt.datetime, force_report: bool = False, dry_run: bool
         if n["report_enabled"] and (n["whatsapp"] or n["email"]) and report_due and (force_report or st.get("report_week") != wkey):
             rep = build_report(db, t, start, end)
             subject, body = _report_email(rep)
-            sent = ["dry-run"] if dry_run else _deliver(n, s.notify_wa_report_template,
+            sent = ["dry-run"] if dry_run else _deliver(db, t, "weekly_report", n, s.notify_wa_report_template,
                                                        [rep["business"], rep["period"], f"{rep['messages']:,}", rep["cost"], rep["balance"]], subject, body)
             res["reports"].append({"tenant": t.slug, "week": wkey, "results": sent})
             if not dry_run and any(x.endswith(":ok") for x in sent):
@@ -171,7 +174,7 @@ def run(db: Session, now: dt.datetime, force_report: bool = False, dry_run: bool
             stale = not last_at or (now - dt.datetime.fromisoformat(last_at)) > dt.timedelta(hours=72)
             if level in ADVICE and (LEVELS[level] > LEVELS.get(last_level, 0) or (level == last_level and stale)):
                 bal = ts.customer_view(db, t)["wallet"]["balance"]
-                sent = ["dry-run"] if dry_run else _deliver(n, s.notify_wa_low_template, [t.name, bal, ADVICE[level]],
+                sent = ["dry-run"] if dry_run else _deliver(db, t, "low_balance", n, s.notify_wa_low_template, [t.name, bal, ADVICE[level]],
                                                            "Your WhatsApp credit needs attention", f"Hi {t.name},\n\nYour WhatsApp credit is {bal}. {ADVICE[level]}\n\nBuy more under Add-ons in your client area.")
                 res["alerts"].append({"tenant": t.slug, "level": level, "results": sent})
                 if not dry_run and any(x.endswith(":ok") for x in sent):

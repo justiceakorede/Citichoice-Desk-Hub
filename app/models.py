@@ -544,3 +544,16 @@ for _d in _PG_TRIGGERS:
     event.listen(Base.metadata, "after_create", _d.execute_if(dialect="postgresql"))
 for _d in _SQLITE_TRIGGERS:
     event.listen(Base.metadata, "after_create", _d.execute_if(dialect="sqlite"))
+
+
+class NotificationLog(Base):
+    """Every weekly report and low-balance alert the hub tried to send, by channel and recipient. No FK: the log outlives the tenant."""
+    __tablename__ = "notification_log"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(30))        # weekly_report | low_balance
+    channel: Mapped[str] = mapped_column(String(20))     # whatsapp | email
+    recipient: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20))      # sent | failed
+    detail: Mapped[str | None] = mapped_column(String(400))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)

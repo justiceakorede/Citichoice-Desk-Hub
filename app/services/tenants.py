@@ -94,7 +94,13 @@ def delete_tenant(db, t, actor: str, confirm: str, purge_history: bool = False) 
                          ", which are kept for accounting. Leave it cancelled, or confirm the permanent purge of its money history (test tenants only).")
     audit(db, actor, "tenant.delete", t.id, {"slug": t.slug, "name": t.name, "wisecp_service_id": t.wisecp_service_id, "status": t.status,
                                                          "purged_money_history": counts if purge_history else {}})
+    from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
+    guarded = (("ledger_entries", "ledger_entries_immutable"), ("receivable_entries", "receivable_entries_immutable"))
+    lifted = bool(purge_history and counts and db.get_bind().dialect.name == "postgresql")
+    if lifted:   # the ledgers are append-only by database trigger; lift it for THIS transaction only (a rollback restores it)
+        for tbl, trg in guarded:
+            db.execute(text(f"ALTER TABLE {tbl} DISABLE TRIGGER {trg}"))
     steps = []
     for table in reversed(Base.metadata.sorted_tables):         # children first, but we also retry, so ordering mistakes cannot wedge it
         if table.name in ("audit_log", "tenants"):
@@ -108,20 +114,25 @@ def delete_tenant(db, t, actor: str, confirm: str, purge_history: bool = False) 
                 steps.append(delete(table).where(fk.parent.in_(select(fk.column).where(parent.c.tenant_id == t.id))))
                 break
     steps.append(delete(Tenant.__table__).where(Tenant.__table__.c.id == t.id))
-    last = None
+    errs: dict[str, str] = {}
     for _ in range(8):
         left = []
         for stmt in steps:
             try:
                 with db.begin_nested():
                     db.execute(stmt)
+                errs.pop(stmt.table.name, None)
             except DBAPIError as e:
                 left.append(stmt)
-                last = e
+                errs[stmt.table.name] = str(getattr(e, "orig", e)).splitlines()[0][:200]
         if not left:
             break
         steps = left
     else:
-        raise ValueError("delete_failed: the database refused part of the delete: " + str(getattr(last, "orig", last))[:360])
+        blockers = "; ".join(f"{k}: {v}" for k, v in errs.items() if k != "tenants") or "; ".join(f"{k}: {v}" for k, v in errs.items())
+        raise ValueError("delete_failed: the database refused part of the delete. " + blockers[:420])
+    if lifted:
+        for tbl, trg in guarded:
+            db.execute(text(f"ALTER TABLE {tbl} ENABLE TRIGGER {trg}"))
     db.expunge(t)
     db.flush()

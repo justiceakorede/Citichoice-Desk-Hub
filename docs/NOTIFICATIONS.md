@@ -19,3 +19,7 @@ Sent from YOUR WhatsApp number and by SMTP email. Each customer has switches on 
 - The report covers the last complete Monday-Sunday week (Lagos time), sent Monday from 08:00, once per week.
 - The low-balance alert is sent when the level reaches low, critical, zero or owing, again only if it gets worse or after 72 hours, and resets when topped up.
 - A WhatsApp that Meta rejects (for example the customer never messaged you and the template is not approved) is reported in the command output and the audit trail.
+
+## Seeing what was sent
+Desk Hub > Notifications lists every weekly report and low-balance alert by customer, kind, channel (WhatsApp or email), recipient and result
+(sent or failed, with the reason). Each tenant page shows its last 8. Migration 0013 creates the table; entries appear from the next `notify-run`.

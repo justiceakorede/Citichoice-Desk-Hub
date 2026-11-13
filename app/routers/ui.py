@@ -4,17 +4,17 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from jinja2 import DictLoader, Environment, select_autoescape
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import money
 from ..auth import staff as staff_auth
 from ..config import get_settings
 from ..db import get_db
-from ..models import AdjustmentRequest, AuditLog, FxRate, LedgerEntry, RateCard, Tenant, now, uid
+from ..models import AdjustmentRequest, AuditLog, FxRate, LedgerEntry, NotificationLog, RateCard, Tenant, now, uid
 from ..services import tenants as ts
 from ..services import wallet as wl
 from ..services import adjustments as adj_svc, fx as fx_svc, jobs, lifecycle as lc, rates as rates_svc
@@ -52,7 +52,7 @@ header .links a{padding:10px 12px}header .who{margin:6px 12px}header .links form
 @media(max-width:480px){.row{grid-template-columns:1fr}h2{font-size:18px}.card{padding:14px}}
 .kpi{font-size:28px;font-weight:650;letter-spacing:-.02em}.kpi small{font-size:13px;font-weight:500;color:var(--muted)}
 </style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Menu"><label for="navtoggle" class="burger" title="Menu">&#9776;</label>
-<nav class="links"><a href="/ui/overview">Overview</a><a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/audit">Audit</a>
+<nav class="links"><a href="/ui/overview">Overview</a><a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/notifications">Notifications</a><a href="/ui/audit">Audit</a>
 <span class="who">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form></nav>{% endif %}</header>
 <main>{% block body %}{% endblock %}</main></body></html>"""
 
@@ -61,6 +61,19 @@ T_BROKEN = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
 <div><label>Type the slug <b>{{ t.slug }}</b></label><input name="confirm" autocomplete="off" required></div><div><label>Type DELETE-HISTORY to erase credit and money history too</label><input name="purge" autocomplete="off"></div>
 <div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div></form></div>{% endblock %}"""
+
+T_NOTES = """{% extends "base" %}{% block body %}<h2>Notifications sent</h2>
+<div class="card"><form class="inline" method="get" action="/ui/notifications"><select name="tenant"><option value="">All customers</option>{% for tid, nm in names %}<option value="{{ tid }}" {{ 'selected' if tid==tenant }}>{{ nm }}</option>{% endfor %}</select>
+<select name="kind"><option value="">All kinds</option><option value="weekly_report" {{ 'selected' if kind=='weekly_report' }}>Weekly report</option><option value="low_balance" {{ 'selected' if kind=='low_balance' }}>Low balance</option></select>
+<select name="channel"><option value="">WhatsApp and email</option><option value="whatsapp" {{ 'selected' if channel=='whatsapp' }}>WhatsApp</option><option value="email" {{ 'selected' if channel=='email' }}>Email</option></select>
+<select name="status"><option value="">Any result</option><option value="sent" {{ 'selected' if status=='sent' }}>Sent</option><option value="failed" {{ 'selected' if status=='failed' }}>Failed</option></select>
+<select name="per">{% for o in ('20','50','100') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ o }} per page</option>{% endfor %}</select><button class="ghost">Apply</button>
+<span class="muted">{{ total }} record(s){% if pages > 1 %} &middot; page {{ page }} of {{ pages }}{% endif %}</span>
+{% if page > 1 %}<a href="{{ base }}&page={{ page-1 }}">&laquo; Newer</a>{% endif %}{% if page < pages %}<a href="{{ base }}&page={{ page+1 }}">Older &raquo;</a>{% endif %}</form></div>
+<div class="tablewrap"><table><tr><th>When</th><th>Customer</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th></tr>
+{% for n in rows %}<tr><td>{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ lookup.get(n.tenant_id, n.tenant_id) }}</td><td>{{ n.kind }}</td><td>{{ n.channel }}</td><td>{{ n.recipient }}</td>
+<td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td></tr>
+{% else %}<tr><td colspan="6" class="muted">Nothing here yet. Reports and alerts appear after notify-run sends them.</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 T_OVERVIEW = """{% extends "base" %}{% block body %}<h2>Overview</h2>
 <div class="row">
@@ -91,9 +104,16 @@ T_PLANS = """{% extends "base" %}{% block body %}<h2>Plans</h2>
 <div><label>Seats</label><input name="seats" inputmode="numeric"></div><div><label>Channels</label><input name="channels" inputmode="numeric"></div><div><label>AI replies / month</label><input name="ai_replies" inputmode="numeric"></div>
 <div><label>Default markup (x)</label><input name="default_markup" inputmode="decimal"></div><div><button>Create plan</button></div></div></form></div>{% endblock %}"""
 
-T_LIST = """{% extends "base" %}{% block body %}<h2>Tenants</h2><table><tr><th>Name</th><th>Plan</th><th>Status</th><th>Wallet</th><th>AI</th><th>Seats</th><th>Channels</th></tr>
+T_LIST = """{% extends "base" %}{% block body %}<h2>Tenants</h2>
+<div class="card"><form class="inline" method="get" action="/ui"><input name="q" value="{{ q }}" placeholder="Search name, slug or email" style="min-width:240px">
+<select name="status"><option value="">All statuses</option>{% for st in ('active','suspended','pending','provisioning_failed','cancelling','cancelled','terminated') %}<option value="{{ st }}" {{ 'selected' if st==status }}>{{ st }}</option>{% endfor %}</select>
+<select name="per">{% for o in ('10','20','50','100','all') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ 'All' if o=='all' else o ~ ' per page' }}</option>{% endfor %}</select><button class="ghost">Apply</button>
+<span class="muted">{{ total }} tenant(s){% if pages > 1 %} &middot; page {{ page }} of {{ pages }}{% endif %}</span>
+{% if page > 1 %}<a href="/ui?q={{ q|urlencode }}&status={{ status }}&per={{ per }}&page={{ page-1 }}">&laquo; Prev</a>{% endif %}{% if page < pages %}<a href="/ui?q={{ q|urlencode }}&status={{ status }}&per={{ per }}&page={{ page+1 }}">Next &raquo;</a>{% endif %}</form></div>
+<div class="tablewrap"><table><tr><th>Name</th><th>Plan</th><th>Status</th><th>Wallet</th><th>AI</th><th>Seats</th><th>Channels</th></tr>
 {% for s in rows %}<tr><td><a href="/ui/tenants/{{ s.id }}">{{ s.name }}</a></td><td>{{ s.plan }}</td><td><span class="pill {{ s.status }}">{{ s.status }}{% if s.suspend_mode!='none' %} / {{ s.suspend_mode }}{% endif %}</span></td>
-<td class="{{ s.wallet.alert or '' }}">{{ fmt(s.wallet.balance_micro, s.wallet.currency) }}</td><td>{{ s.ai_replies.used }}/{{ s.ai_replies.limit }}</td><td>{{ s.seats.used }}/{{ s.seats.limit }}</td><td>{{ s.channels.used }}/{{ s.channels.limit }}</td></tr>{% endfor %}</table>{% endblock %}"""
+<td class="{{ s.wallet.alert or '' }}">{{ fmt(s.wallet.balance_micro, s.wallet.currency) }}</td><td>{{ s.ai_replies.used }}/{{ s.ai_replies.limit }}</td><td>{{ s.seats.used }}/{{ s.seats.limit }}</td><td>{{ s.channels.used }}/{{ s.channels.limit }}</td></tr>
+{% else %}<tr><td colspan="7" class="muted">No tenants match.</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="pill {{ s.status }}">{{ s.status }}</span></h2>
 <p class="muted">{{ t.owner_email }} &middot; WISECP service {{ t.wisecp_service_id }} &middot; plan {{ t.plan }} &middot; markup {{ t.markup }}x &middot; Chatwoot account {{ t.chatwoot_account_id or '-' }}</p>
@@ -112,8 +132,11 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 {% if t.status=='active' %}<select name="mode"><option value="pause_outbound">Pause outbound + AI</option><option value="lock">Lock workspace</option></select><button>Suspend</button>{% else %}<button>Unsuspend</button>{% endif %}</form>{% else %}<p class="muted">Status {{ t.status }}: lifecycle actions are handled through the admin API.</p>{% endif %}</div>
 <div class="card"><b>This month</b><table><tr><th>Category</th><th>Messages</th><th>Provider cost</th><th>FX buffer</th><th>Service fee</th><th>Charged</th></tr>
 {% for c,v in s.month_usage.items() %}<tr><td>{{ c }}</td><td>{{ v.messages }}</td><td>{{ fmt(v.provider_cost_micro, s.wallet.currency) }}</td><td>{{ fmt(v.fx_buffer_micro, s.wallet.currency) }}</td><td>{{ fmt(v.service_fee_micro, s.wallet.currency) }}</td><td>{{ fmt(v.charge_micro, s.wallet.currency) }}</td></tr>{% endfor %}</table></div>
-<div class="card"><b>Ledger</b><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th><th>Reference</th></tr>
-{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div><h2>WhatsApp usage: manual correction</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/manual-usage"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
+<div class="card"><b>Ledger</b> <span class="muted">({{ ltotal }} entries)</span> &middot; <a href="/ui/tenants/{{ t.id }}/ledger.csv">Download CSV</a>
+<form class="inline" method="get" action="/ui/tenants/{{ t.id }}"><select name="lper" onchange="this.form.submit()">{% for o in ('10','20','50','100') %}<option value="{{ o }}" {{ 'selected' if o==lper }}>{{ o }} per page</option>{% endfor %}</select>
+<span class="muted">page {{ lpage }} of {{ lpages }}</span>{% if lpage > 1 %}<a href="/ui/tenants/{{ t.id }}?lper={{ lper }}&lpage={{ lpage-1 }}">&laquo; Newer</a>{% endif %}{% if lpage < lpages %}<a href="/ui/tenants/{{ t.id }}?lper={{ lper }}&lpage={{ lpage+1 }}">Older &raquo;</a>{% endif %}</form>
+<div class="tablewrap"><table><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance</th><th>Reference</th></tr>
+{% for e in ledger %}<tr><td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.kind }}</td><td>{{ fmt(e.amount_micro, e.currency) }}</td><td>{{ fmt(e.balance_after_micro, e.currency) }}</td><td>{{ e.reference or '' }}</td></tr>{% endfor %}</table></div></div><h2>WhatsApp usage: manual correction</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/manual-usage"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
 <div><label>Messages (+ add, - take back)</label><input name="messages" inputmode="numeric" placeholder="+25 or -10" required></div>
 <div><label>Category</label><select name="category"><option>service</option><option>utility</option><option>marketing</option><option>authentication</option></select></div>
 <div><label>Country (blank = default)</label><input name="country" maxlength="2" placeholder="NG" style="text-transform:uppercase"></div>
@@ -122,6 +145,9 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <h2>AI replies: manual correction</h2><div class="card"><form class="inline" method="post" action="/ui/tenants/{{ t.id }}/ai-adjust"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input name="delta" inputmode="numeric" placeholder="+50 or -20" required style="width:130px"><input name="reason" placeholder="Reason (kept in the audit)" required style="min-width:260px"><button>Apply</button></form>
 <p class="muted">Adds to (or with a minus sign gives back) this month's AI-reply count. New replies keep counting normally on top of it.</p></div>
+<h2>Recent notifications</h2><div class="card"><div class="tablewrap"><table><tr><th>When</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th></tr>
+{% for n in notes %}<tr><td>{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ n.kind }}</td><td>{{ n.channel }}</td><td>{{ n.recipient }}</td><td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td></tr>
+{% else %}<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>{% endfor %}</table></div><p class="muted"><a href="/ui/notifications?tenant={{ t.id }}">See all for this customer</a></p></div>
 <h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
 <div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Weekly report</label></div>
@@ -163,8 +189,13 @@ T_ADJ = """{% extends "base" %}{% block body %}<h2>Money adjustments</h2>
 <td>{% if r.status == 'pending' %}<form method="post" action="/ui/adjustments/{{ r.id }}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Approve</button></form>
 <form method="post" action="/ui/adjustments/{{ r.id }}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input name="note" placeholder="Why rejected"><button>Reject</button></form>{% endif %}</td></tr>{% endfor %}</table>{% endblock %}"""
 
-T_AUDIT = """{% extends "base" %}{% block body %}<h2>Audit log</h2><table><tr><th>When</th><th>Actor</th><th>Action</th><th>Tenant</th><th>Detail</th></tr>
-{% for a in rows %}<tr><td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.tenant_id or '' }}</td><td class="muted">{{ a.detail }}</td></tr>{% endfor %}</table>{% endblock %}"""
+T_AUDIT = """{% extends "base" %}{% block body %}<h2>Audit log</h2>
+<div class="card"><form class="inline" method="get" action="/ui/audit"><input name="q" value="{{ q }}" placeholder="Filter by action, e.g. topup or adjustment" style="min-width:260px">
+<select name="per">{% for o in ('50','100','200') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ o }} per page</option>{% endfor %}</select><button class="ghost">Apply</button>
+<span class="muted">{{ total }} entries{% if pages > 1 %} &middot; page {{ page }} of {{ pages }}{% endif %}</span>
+{% if page > 1 %}<a href="/ui/audit?q={{ q|urlencode }}&per={{ per }}&page={{ page-1 }}">&laquo; Newer</a>{% endif %}{% if page < pages %}<a href="/ui/audit?q={{ q|urlencode }}&per={{ per }}&page={{ page+1 }}">Older &raquo;</a>{% endif %}</form></div>
+<div class="tablewrap"><table><tr><th>When</th><th>Actor</th><th>Action</th><th>Tenant</th><th>Detail</th></tr>
+{% for a in rows %}<tr><td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.tenant_id or '' }}</td><td class="muted">{{ a.detail }}</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 T_USAGE = """{% extends "base" %}{% block body %}<h2>{{ t.name }}: messaging wallet</h2>
 <div class="row"><div class="card"><div class="muted">Balance</div><div class="big {{ s.wallet.alert or '' }}">{{ fmt(s.wallet.balance_micro, s.wallet.currency) }}</div>
@@ -181,10 +212,20 @@ def _rate_txt(micro) -> str:
     return t or "0"
 
 
-env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW, "tenant_broken": T_BROKEN,
+env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW, "notifications": T_NOTES, "tenant_broken": T_BROKEN,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
 env.filters["rate"] = _rate_txt
+
+
+def _page_params(per: str, page: int, total: int, allowed=("10", "20", "50", "100", "all"), default="20") -> tuple[str, int, int, int]:
+    per = per if per in allowed else default
+    size = max(total, 1) if per == "all" else int(per)
+    pages = max(1, -(-total // size)) if total else 1
+    page = min(max(1, page), pages)
+    return per, size, pages, page
+
+
 env.globals["fmt"] = money.format_micro
 
 
@@ -210,22 +251,50 @@ def customer_api_only():
 
 
 @router.get("/ui", response_class=HTMLResponse)
-def ui_home(user: str = Depends(staff), db: Session = Depends(get_db)):
-    rows = [ts.summary(db, t) for t in db.scalars(select(Tenant).where(Tenant.status != "deleted").order_by(Tenant.name))]
-    return render("list", user, staff=True, rows=rows)
+def ui_home(q: str = "", status: str = "", per: str = "20", page: int = 1, user: str = Depends(staff), db: Session = Depends(get_db)):
+    base = select(Tenant)
+    qq = q.strip()
+    if qq:
+        like = f"%{qq.lower()}%"
+        base = base.where(or_(func.lower(Tenant.name).like(like), func.lower(Tenant.slug).like(like), func.lower(Tenant.owner_email).like(like)))
+    if status:
+        base = base.where(Tenant.status == status)
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    per, size, pages, page = _page_params(per, page, total)
+    rows = [ts.summary(db, t) for t in db.scalars(base.order_by(Tenant.name).offset((page - 1) * size).limit(size))]
+    return render("list", user, staff=True, rows=rows, q=qq, status=status, per=per, page=page, pages=pages, total=total)
 
 
 @router.get("/ui/tenants/{tid}", response_class=HTMLResponse)
-def ui_tenant(tid: str, user: str = Depends(staff), db: Session = Depends(get_db)):
+def ui_tenant(tid: str, lpage: int = 1, lper: str = "20", user: str = Depends(staff), db: Session = Depends(get_db)):
     import logging
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
     try:
-        led = db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at.desc()).limit(50)).all()
-        return render("tenant", user, staff=True, t=t, s=ts.summary(db, t), ledger=led, csrf=csrf_token(user), key=uuid.uuid4().hex)
+        ltotal = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.tenant_id == tid)) or 0
+        lper, size, lpages, lpage = _page_params(lper, lpage, ltotal, allowed=("10", "20", "50", "100"))
+        led = db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at.desc()).offset((lpage - 1) * size).limit(size)).all()
+        notes = db.scalars(select(NotificationLog).where(NotificationLog.tenant_id == tid).order_by(NotificationLog.created_at.desc()).limit(8)).all()
+        return render("tenant", user, staff=True, t=t, s=ts.summary(db, t), ledger=led, ltotal=ltotal, lper=lper, lpage=lpage, lpages=lpages, notes=notes,
+                      csrf=csrf_token(user), key=uuid.uuid4().hex)
     except Exception as e:                                      # a damaged tenant must never lock you out of removing it
         logging.getLogger("deskhub.ui").exception("tenant page failed for %s", tid)
         db.rollback()
         return render("tenant_broken", user, staff=True, t=t, err=f"{type(e).__name__}: {str(e)[:300]}", csrf=csrf_token(user))
+
+
+@router.get("/ui/tenants/{tid}/ledger.csv")
+def ui_ledger_csv(tid: str, user: str = Depends(staff), db: Session = Depends(get_db)):
+    import csv
+    import io
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["when_utc", "type", "currency", "amount", "balance_after", "reference"])
+    for e in db.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == tid).order_by(LedgerEntry.created_at)):
+        exp = money.exponent_of(e.currency)
+        w.writerow([e.created_at.strftime("%Y-%m-%d %H:%M:%S"), e.kind, e.currency, f"{Decimal(e.amount_micro) / Decimal(1_000_000):.{exp}f}",
+                    f"{Decimal(e.balance_after_micro) / Decimal(1_000_000):.{exp}f}", e.reference or ""])
+    return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{t.slug}-ledger.csv"'})
 
 
 @router.post("/ui/tenants/{tid}/notify")
@@ -326,6 +395,23 @@ def ui_manual_usage(tid: str, messages: str = Form(...), category: str = Form(..
         raise HTTPException(422, str(e))
     db.commit()
     return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
+
+
+@router.get("/ui/notifications", response_class=HTMLResponse)
+def ui_notifications(tenant: str = "", kind: str = "", channel: str = "", status: str = "", per: str = "20", page: int = 1,
+                     user: str = Depends(staff), db: Session = Depends(get_db)):
+    from urllib.parse import urlencode
+    q = select(NotificationLog)
+    for col, val in ((NotificationLog.tenant_id, tenant), (NotificationLog.kind, kind), (NotificationLog.channel, channel), (NotificationLog.status, status)):
+        if val:
+            q = q.where(col == val)
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    per, size, pages, page = _page_params(per, page, total, allowed=("20", "50", "100"))
+    rows = db.scalars(q.order_by(NotificationLog.created_at.desc()).offset((page - 1) * size).limit(size)).all()
+    names = [(t.id, t.name) for t in db.scalars(select(Tenant).order_by(Tenant.name))]
+    base = "/ui/notifications?" + urlencode({"tenant": tenant, "kind": kind, "channel": channel, "status": status, "per": per})
+    return render("notifications", user, staff=True, rows=rows, names=names, lookup=dict(names), tenant=tenant, kind=kind, channel=channel, status=status,
+                  per=per, page=page, pages=pages, total=total, base=base)
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",
@@ -548,8 +634,14 @@ def ui_plan_create(code: str = Form(...), name: str = Form(...), seats: str = Fo
 
 
 @router.get("/ui/audit", response_class=HTMLResponse)
-def ui_audit(user: str = Depends(staff), db: Session = Depends(get_db)):
-    return render("audit", user, staff=True, rows=db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)).all())
+def ui_audit(q: str = "", per: str = "50", page: int = 1, user: str = Depends(staff), db: Session = Depends(get_db)):
+    base = select(AuditLog)
+    if q.strip():
+        base = base.where(AuditLog.action.contains(q.strip()))
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    per, size, pages, page = _page_params(per, page, total, allowed=("50", "100", "200"), default="50")
+    return render("audit", user, staff=True, rows=db.scalars(base.order_by(AuditLog.created_at.desc()).offset((page - 1) * size).limit(size)).all(),
+                  q=q.strip(), per=per, page=page, pages=pages, total=total)
 
 
 @router.get("/u/{token}", response_class=HTMLResponse, dependencies=[Depends(customer_api_only)])
