@@ -32,6 +32,10 @@ ADVICE = {"low": "Top up soon so messages keep flowing.", "critical": "Top up no
           "debt": "You owe credit for messages already delivered. Your next top-up clears it first."}
 
 
+FREQS = ("off", "daily", "weekly", "monthly")
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 def conf(t: Tenant) -> dict:
     n = dict(t.notify or {})
     n.setdefault("report_enabled", False)
@@ -39,6 +43,10 @@ def conf(t: Tenant) -> dict:
     n.setdefault("whatsapp", [])
     n.setdefault("email", [])
     n.setdefault("state", {})
+    n.setdefault("whatsapp_freq", "weekly")      # how often each channel gets the report (customers set up before this existed stay weekly)
+    n.setdefault("email_freq", "weekly")
+    n.setdefault("hour", 8)                      # Lagos time
+    n.setdefault("weekday", 0)                   # for weekly reports: 0 = Monday
     return n
 
 
@@ -46,7 +54,7 @@ def _digits(v: str) -> str:
     return "".join(c for c in str(v) if c.isdigit())
 
 
-def set_conf(t: Tenant, *, report=None, low=None, whatsapp=None, email=None) -> None:
+def set_conf(t: Tenant, *, report=None, low=None, whatsapp=None, email=None, whatsapp_freq=None, email_freq=None, hour=None, weekday=None) -> None:
     n = conf(t)
     if report is not None:
         n["report_enabled"] = bool(report)
@@ -56,6 +64,20 @@ def set_conf(t: Tenant, *, report=None, low=None, whatsapp=None, email=None) -> 
         n["whatsapp"] = sorted({d for d in (_digits(x) for x in whatsapp) if 8 <= len(d) <= 15})
     if email is not None:
         n["email"] = sorted({e.strip().lower() for e in email if "@" in e and len(e) < 200})
+    for key, val in (("whatsapp_freq", whatsapp_freq), ("email_freq", email_freq)):
+        if val is not None:
+            if val not in FREQS:
+                raise ValueError(f"{key} must be one of {', '.join(FREQS)}")
+            n[key] = val
+    if hour is not None:
+        if not 0 <= int(hour) <= 23:
+            raise ValueError("hour must be 0 to 23 (Lagos time)")
+        n["hour"] = int(hour)
+    if weekday is not None:
+        wd = WEEKDAYS.index(weekday.lower()[:3]) if isinstance(weekday, str) and not weekday.isdigit() else int(weekday)
+        if not 0 <= wd <= 6:
+            raise ValueError("weekday must be mon to sun")
+        n["weekday"] = wd
     t.notify = n
 
 
@@ -120,8 +142,62 @@ def build_report(db: Session, t: Tenant, start: dt.datetime, end: dt.datetime) -
     msgs = sum(int(n) for _, n, _ in rows)
     cost = sum(int(c) for _, _, c in rows)
     sl, el = start.astimezone(LAGOS), (end - dt.timedelta(seconds=1)).astimezone(LAGOS)
-    return {"business": t.name, "period": f"{sl:%d %b} - {el:%d %b %Y}", "messages": msgs, "cost": money.format_micro(cost, cur),
+    label = f"{sl:%d %b %Y}" if sl.date() == el.date() else (f"{sl:%d %b} - {el:%d %b %Y}" if sl.year == el.year else f"{sl:%d %b %Y} - {el:%d %b %Y}")
+    return {"business": t.name, "period": label, "messages": msgs, "cost": money.format_micro(cost, cur),
             "balance": cv["wallet"]["balance"], "alert": cv["wallet"]["alert"], "by_category": {c: (int(n), money.format_micro(int(ch), cur)) for c, n, ch in rows}}
+
+
+def schedule_point(now: dt.datetime, freq: str, weekday: int, hour: int):
+    """The most recent moment this report was due (Lagos time) and the complete period it covers.
+    daily: yesterday. weekly: the 7 whole days before the send day. monthly: the previous calendar month."""
+    nl = now.astimezone(LAGOS)
+    at = lambda d: d.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if freq == "daily":
+        occ = at(nl)
+        if occ > nl:
+            occ -= dt.timedelta(days=1)
+        end = occ.replace(hour=0)
+        start = end - dt.timedelta(days=1)
+    elif freq == "weekly":
+        d = nl
+        while d.weekday() != weekday:
+            d -= dt.timedelta(days=1)
+        occ = at(d)
+        if occ > nl:
+            occ -= dt.timedelta(days=7)
+        end = occ.replace(hour=0)
+        start = end - dt.timedelta(days=7)
+    else:
+        occ = at(nl.replace(day=1))
+        if occ > nl:
+            occ = at((occ - dt.timedelta(days=1)).replace(day=1))
+        end = occ.replace(hour=0)
+        start = (end - dt.timedelta(days=1)).replace(day=1)
+    return occ, start.astimezone(dt.timezone.utc), end.astimezone(dt.timezone.utc), occ.strftime("%Y-%m-%d")
+
+
+def on_demand_bounds(now: dt.datetime, period: str, date_from: str = "", date_to: str = "") -> tuple[dt.datetime, dt.datetime]:
+    nl = now.astimezone(LAGOS)
+    today = nl.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc = lambda d: d.astimezone(dt.timezone.utc)
+    if period == "yesterday":
+        return utc(today - dt.timedelta(days=1)), utc(today)
+    if period == "last7":
+        return utc(today - dt.timedelta(days=7)), utc(today)
+    if period == "last30":
+        return utc(today - dt.timedelta(days=30)), utc(today)
+    if period == "mtd":
+        return utc(today.replace(day=1)), now.astimezone(dt.timezone.utc)
+    if period == "custom":
+        try:
+            a = dt.datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=LAGOS)
+            b = dt.datetime.strptime(date_to or date_from, "%Y-%m-%d").replace(tzinfo=LAGOS) + dt.timedelta(days=1)
+        except ValueError:
+            raise ValueError("dates must look like 2026-11-30")
+        if b <= a or (b - a).days > 400:
+            raise ValueError("the end date must be after the start date, within 400 days")
+        return utc(a), min(utc(b), now.astimezone(dt.timezone.utc))
+    raise ValueError("period must be yesterday, last7, last30, mtd or custom")
 
 
 def _report_email(rep: dict) -> tuple[str, str]:
@@ -137,37 +213,69 @@ def _report_email(rep: dict) -> tuple[str, str]:
     return f"Your WhatsApp summary for {rep['period']}", "\n".join(lines)
 
 
-def _deliver(db: Session, t: Tenant, kind: str, n: dict, wa_template: str, wa_params: list[str], subject: str, body: str) -> list[str]:
+def _deliver(db: Session, t: Tenant, kind: str, n: dict, wa_template: str, wa_params: list[str], subject: str, body: str,
+             channels: tuple = ("whatsapp", "email"), note: str = "") -> list[str]:
     from ..models import NotificationLog
     out = []
-    for num in n["whatsapp"]:
-        ok, why = send_whatsapp(num, wa_template, wa_params)
-        db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="whatsapp", recipient="+" + num, status="sent" if ok else "failed", detail=None if ok else why[:400]))
-        out.append(f"whatsapp:{num[-4:]}:{'ok' if ok else why}")
-    for addr in n["email"]:
-        ok, why = send_email(addr, subject, body)
-        db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="email", recipient=addr, status="sent" if ok else "failed", detail=None if ok else why[:400]))
-        out.append(f"email:{addr.split('@')[0][:2]}***:{'ok' if ok else why}")
+    if "whatsapp" in channels:
+        for num in n["whatsapp"]:
+            ok, why = send_whatsapp(num, wa_template, wa_params)
+            db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="whatsapp", recipient="+" + num, status="sent" if ok else "failed", detail=(note or None) if ok else why[:400]))
+            out.append(f"whatsapp:{num[-4:]}:{'ok' if ok else why}")
+    if "email" in channels:
+        for addr in n["email"]:
+            ok, why = send_email(addr, subject, body)
+            db.add(NotificationLog(tenant_id=t.id, kind=kind, channel="email", recipient=addr, status="sent" if ok else "failed", detail=(note or None) if ok else why[:400]))
+            out.append(f"email:{addr.split('@')[0][:2]}***:{'ok' if ok else why}")
     return out
+
+
+def send_report_now(db: Session, t: Tenant, actor: str, period: str, channels: tuple, date_from: str = "", date_to: str = "",
+                    extra_whatsapp: str = "", extra_email: str = "", now: dt.datetime | None = None) -> dict:
+    """On demand: send this customer a report right now, for the period you choose, to their saved recipients and/or one-off extras.
+    Does not touch the schedule, so the normal daily/weekly/monthly reports still go out when due."""
+    s = get_settings()
+    now = now or dt.datetime.now(dt.timezone.utc)
+    channels = tuple(c for c in channels if c in ("whatsapp", "email"))
+    if not channels:
+        raise ValueError("choose WhatsApp, email or both")
+    start, end = on_demand_bounds(now, period, date_from, date_to)
+    n = conf(t)
+    n["whatsapp"] = sorted(set(n["whatsapp"]) | {d for d in (_digits(x) for x in extra_whatsapp.split(",")) if 8 <= len(d) <= 15})
+    n["email"] = sorted(set(n["email"]) | {e.strip().lower() for e in extra_email.split(",") if "@" in e})
+    if not (("whatsapp" in channels and n["whatsapp"]) or ("email" in channels and n["email"])):
+        raise ValueError("no recipients for the chosen channels: add numbers or emails on the tenant page, or fill the one-off boxes")
+    rep = build_report(db, t, start, end)
+    subject, body = _report_email(rep)
+    sent = _deliver(db, t, "report_on_demand", n, s.notify_wa_report_template,
+                    [rep["business"], rep["period"], f"{rep['messages']:,}", rep["cost"], rep["balance"]], subject, body, channels, note=f"by {actor}")
+    ts.audit(db, actor, "notify.report_on_demand", t.id, {"period": rep["period"], "channels": list(channels), "results": sent})
+    return {"period": rep["period"], "messages": rep["messages"], "cost": rep["cost"], "results": sent}
 
 
 def run(db: Session, now: dt.datetime, force_report: bool = False, dry_run: bool = False) -> dict:
     s = get_settings()
     res = {"reports": [], "alerts": [], "skipped": 0}
-    start, end, wkey = week_bounds(now)
-    monday_8 = end.astimezone(LAGOS).replace(hour=8)
-    report_due = force_report or now.astimezone(LAGOS) >= monday_8
     for t in db.scalars(select(Tenant).where(Tenant.status.in_(("active", "suspended")))):
         n = conf(t)
         st = dict(n["state"])
-        if n["report_enabled"] and (n["whatsapp"] or n["email"]) and report_due and (force_report or st.get("report_week") != wkey):
-            rep = build_report(db, t, start, end)
-            subject, body = _report_email(rep)
-            sent = ["dry-run"] if dry_run else _deliver(db, t, "weekly_report", n, s.notify_wa_report_template,
-                                                       [rep["business"], rep["period"], f"{rep['messages']:,}", rep["cost"], rep["balance"]], subject, body)
-            res["reports"].append({"tenant": t.slug, "week": wkey, "results": sent})
-            if not dry_run and any(x.endswith(":ok") for x in sent):
-                st["report_week"] = wkey
+        if n["report_enabled"]:
+            for ch in ("whatsapp", "email"):
+                freq = n[f"{ch}_freq"]
+                if freq == "off" or not n[ch]:
+                    continue
+                occ, start, end, key = schedule_point(now, freq, int(n["weekday"]), int(n["hour"]))
+                due = force_report or (0 <= (now - occ).total_seconds() < 86400 and st.get(f"{ch}_sent") != key)
+                if not due:
+                    continue
+                rep = build_report(db, t, start, end)
+                subject, body = _report_email(rep)
+                one = {**n, "whatsapp": n["whatsapp"] if ch == "whatsapp" else [], "email": n["email"] if ch == "email" else []}
+                sent = ["dry-run"] if dry_run else _deliver(db, t, f"{freq}_report", one, s.notify_wa_report_template,
+                                                           [rep["business"], rep["period"], f"{rep['messages']:,}", rep["cost"], rep["balance"]], subject, body, (ch,))
+                res["reports"].append({"tenant": t.slug, "channel": ch, "frequency": freq, "period": rep["period"], "results": sent})
+                if not dry_run and any(x.endswith(":ok") for x in sent):
+                    st[f"{ch}_sent"] = key
         level = ts.customer_view(db, t)["wallet"]["alert"] or "ok"
         if n["low_balance_enabled"] and (n["whatsapp"] or n["email"]):
             last_level, last_at = st.get("low_level", "ok"), st.get("low_at")

@@ -13,7 +13,8 @@
       register a channel (the WhatsApp phone-number id is what maps Meta billing events to the customer)
   meta-billing-sync [--days 7] [--dry-run]   bill WhatsApp usage from Meta's daily pricing analytics (idempotent; schedule it hourly)
   notify-run [--force-report] [--dry-run]   send due weekly reports and low-balance alerts (schedule hourly; each is sent once)
-  set-notify TENANT [--report on|off] [--low-balance on|off] [--whatsapp 234...,234...] [--email a@b.com,...]
+  set-notify TENANT [--report on|off] [--low-balance on|off] [--whatsapp 234...,...] [--email a@b.com,...] [--whatsapp-freq off|daily|weekly|monthly] [--email-freq ...] [--hour 0-23] [--weekday mon..sun]
+  send-report TENANT [--period yesterday|last7|last30|mtd|custom] [--from YYYY-MM-DD --to YYYY-MM-DD] [--only whatsapp|email] [--extra-whatsapp N] [--extra-email E]   send a report right now
   onboard-check TENANT     checklist of everything a client needs (Chatwoot access, channels, rates, balance, keys, notifications)
   cancel-tenant SLUG        cancel a subscription (locks the workspace; ends in 'cancelled')
   force-cancelled SLUG --reason TEXT   mark a tenant stuck in 'cancelling' as cancelled WITHOUT locking Chatwoot (you do that by hand)
@@ -66,7 +67,9 @@ def main():
     mb = sub.add_parser("meta-billing-sync"); mb.add_argument("--days", type=int, default=7); mb.add_argument("--dry-run", action="store_true")
     nr = sub.add_parser("notify-run"); nr.add_argument("--force-report", action="store_true"); nr.add_argument("--dry-run", action="store_true")
     sn = sub.add_parser("set-notify"); sn.add_argument("tenant"); sn.add_argument("--report", choices=["on", "off"]); sn.add_argument("--low-balance", choices=["on", "off"])
-    sn.add_argument("--whatsapp"); sn.add_argument("--email")
+    sn.add_argument("--whatsapp"); sn.add_argument("--email"); sn.add_argument("--whatsapp-freq"); sn.add_argument("--email-freq"); sn.add_argument("--hour", type=int); sn.add_argument("--weekday")
+    sr = sub.add_parser("send-report"); sr.add_argument("tenant"); sr.add_argument("--period", default="yesterday"); sr.add_argument("--from", dest="date_from", default=""); sr.add_argument("--to", dest="date_to", default="")
+    sr.add_argument("--only", choices=["whatsapp", "email"]); sr.add_argument("--extra-whatsapp", default=""); sr.add_argument("--extra-email", default="")
     oc = sub.add_parser("onboard-check"); oc.add_argument("tenant")
     dt_ = sub.add_parser("delete-tenant"); dt_.add_argument("tenant"); dt_.add_argument("--confirm", required=True); dt_.add_argument("--purge-history", action="store_true")
     ct_ = sub.add_parser("cancel-tenant"); ct_.add_argument("tenant")
@@ -209,6 +212,17 @@ def main():
             except mb_svc.MetaError as e:
                 raise SystemExit(f"meta-billing-sync: {e}")
             print(("DRY RUN (nothing charged): " if a.dry_run else "") + str(rep))
+        elif a.cmd == "send-report":
+            from .services import notify as nf
+            t = db.scalar(select(Tenant).where((Tenant.id == a.tenant) | (Tenant.slug == a.tenant)))
+            if not t:
+                raise SystemExit("tenant not found (python -m app.cli list-tenants)")
+            try:
+                out = nf.send_report_now(db, t, "cli", a.period, (a.only,) if a.only else ("whatsapp", "email"), a.date_from, a.date_to, a.extra_whatsapp, a.extra_email)
+            except ValueError as e:
+                raise SystemExit(f"not sent: {e}")
+            db.commit()
+            print(out)
         elif a.cmd == "notify-run":
             import datetime as _dt
             from .services import notify as nf
@@ -219,7 +233,8 @@ def main():
             if not t:
                 raise SystemExit("tenant not found (python -m app.cli list-tenants)")
             nf.set_conf(t, report=None if a.report is None else a.report == "on", low=None if a.low_balance is None else a.low_balance == "on",
-                        whatsapp=None if a.whatsapp is None else a.whatsapp.split(","), email=None if a.email is None else a.email.split(","))
+                        whatsapp=None if a.whatsapp is None else a.whatsapp.split(","), email=None if a.email is None else a.email.split(","),
+                        whatsapp_freq=a.whatsapp_freq, email_freq=a.email_freq, hour=a.hour, weekday=a.weekday)
             ts.audit(db, "cli", "tenant.notify_set", t.id, {"report": t.notify["report_enabled"], "low": t.notify["low_balance_enabled"],
                                                             "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
             db.commit()

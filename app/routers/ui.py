@@ -64,7 +64,7 @@ T_BROKEN = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 
 T_NOTES = """{% extends "base" %}{% block body %}<h2>Notifications sent</h2>
 <div class="card"><form class="inline" method="get" action="/ui/notifications"><select name="tenant"><option value="">All customers</option>{% for tid, nm in names %}<option value="{{ tid }}" {{ 'selected' if tid==tenant }}>{{ nm }}</option>{% endfor %}</select>
-<select name="kind"><option value="">All kinds</option><option value="weekly_report" {{ 'selected' if kind=='weekly_report' }}>Weekly report</option><option value="low_balance" {{ 'selected' if kind=='low_balance' }}>Low balance</option></select>
+<select name="kind"><option value="">All kinds</option>{% for k, lbl in (("daily_report","Daily report"),("weekly_report","Weekly report"),("monthly_report","Monthly report"),("report_on_demand","Sent on demand"),("low_balance","Low balance")) %}<option value="{{ k }}" {{ 'selected' if kind==k }}>{{ lbl }}</option>{% endfor %}</select>
 <select name="channel"><option value="">WhatsApp and email</option><option value="whatsapp" {{ 'selected' if channel=='whatsapp' }}>WhatsApp</option><option value="email" {{ 'selected' if channel=='email' }}>Email</option></select>
 <select name="status"><option value="">Any result</option><option value="sent" {{ 'selected' if status=='sent' }}>Sent</option><option value="failed" {{ 'selected' if status=='failed' }}>Failed</option></select>
 <select name="per">{% for o in ('20','50','100') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ o }} per page</option>{% endfor %}</select><button class="ghost">Apply</button>
@@ -150,12 +150,23 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 {% else %}<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>{% endfor %}</table></div><p class="muted"><a href="/ui/notifications?tenant={{ t.id }}">See all for this customer</a></p></div>
 <h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
-<div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Weekly report</label></div>
+<div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Scheduled reports on</label></div>
 <div><label><input type="checkbox" name="low" value="1" {{ 'checked' if n.get('low_balance_enabled') }}> Low-balance alert</label></div>
+<div><label>WhatsApp report</label><select name="wa_freq">{% for f in ('off','daily','weekly','monthly') %}<option value="{{ f }}" {{ 'selected' if (n.get('whatsapp_freq') or 'weekly')==f }}>{{ f|capitalize }}</option>{% endfor %}</select></div>
+<div><label>Email report</label><select name="email_freq">{% for f in ('off','daily','weekly','monthly') %}<option value="{{ f }}" {{ 'selected' if (n.get('email_freq') or 'weekly')==f }}>{{ f|capitalize }}</option>{% endfor %}</select></div>
+<div><label>Send at (Lagos time)</label><select name="hour">{% for h in range(24) %}<option value="{{ h }}" {{ 'selected' if (n.get('hour') if n.get('hour') is not none else 8)==h }}>{{ '%02d:00' % h }}</option>{% endfor %}</select></div>
+<div><label>Weekly reports go out on</label><select name="weekday">{% for d in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday') %}<option value="{{ loop.index0 }}" {{ 'selected' if (n.get('weekday') or 0)==loop.index0 }}>{{ d }}</option>{% endfor %}</select></div>
 <div><label>WhatsApp numbers (digits, comma separated)</label><input name="whatsapp" value="{{ (n.get('whatsapp') or [])|join(', ') }}" placeholder="2348012345678"></div>
 <div><label>Emails (comma separated)</label><input name="email" value="{{ (n.get('email') or [])|join(', ') }}"></div>
 <div><button>Save notifications</button></div></div>
-<p class="muted">Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number. Last report week: {{ (n.get('state') or {}).get('report_week', 'none yet') }}.</p></form></div>
+<p class="muted">Daily covers yesterday, weekly the 7 days before the send day, monthly the previous calendar month. Each channel is sent once per period. Only add numbers and emails that agreed to receive these. Sent from your own WhatsApp number.</p></form></div>
+<h2>Send a report now</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/send-report" onsubmit="return confirm('Send this report now?')"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
+<div><label>Period</label><select name="period"><option value="yesterday">Yesterday</option><option value="last7">Last 7 days</option><option value="last30">Last 30 days</option><option value="mtd">This month so far</option><option value="custom">Custom dates</option></select></div>
+<div><label>From (custom)</label><input type="date" name="date_from"></div><div><label>To (custom, inclusive)</label><input type="date" name="date_to"></div>
+<div><label><input type="checkbox" name="ch_whatsapp" value="1" checked> WhatsApp</label><br><label><input type="checkbox" name="ch_email" value="1" checked> Email</label></div>
+<div><label>Also send once to WhatsApp (digits)</label><input name="extra_whatsapp" placeholder="optional"></div><div><label>Also send once to email</label><input name="extra_email" placeholder="optional"></div>
+<div><button>Send now</button></div></div>
+<p class="muted">Goes to the saved recipients above plus any one-off address. It does not change the schedule. The result shows on the Notifications page.</p></form></div>
 <h2>Delete tenant</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/delete" onsubmit="return confirm('Permanently delete this tenant?')">
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2"><div><label>Type the slug <b>{{ t.slug }}</b> to confirm</label><input name="confirm" autocomplete="off" required></div><div><label>Only if it has money history (test tenants): type DELETE-HISTORY</label><input name="purge" autocomplete="off"></div><div><button style="background:#c0392b;border-color:#c0392b">Delete permanently</button></div></div>
 <p class="muted">Removes this tenant, its wallet, channels and settings. Refused if it has money history (kept for accounting) unless you type DELETE-HISTORY, which erases that history too. The Chatwoot account is not deleted. The audit trail is kept.</p></form></div>
@@ -298,17 +309,38 @@ def ui_ledger_csv(tid: str, user: str = Depends(staff), db: Session = Depends(ge
 
 
 @router.post("/ui/tenants/{tid}/notify")
-def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), whatsapp: str = Form(""), email: str = Form(""), csrf: str = Form(...),
+def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), whatsapp: str = Form(""), email: str = Form(""), wa_freq: str = Form("weekly"),
+                     email_freq: str = Form("weekly"), hour: str = Form("8"), weekday: str = Form("0"), csrf: str = Form(...),
                      user: str = Depends(staff), db: Session = Depends(get_db)):
     from ..services import notify as nf
     check_csrf(user, csrf)
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
-    nf.set_conf(t, report=report == "1", low=low == "1", whatsapp=[x for x in whatsapp.split(",") if x.strip()], email=[x for x in email.split(",") if x.strip()])
-    ts.audit(db, user, "tenant.notify_set", t.id, {"report": t.notify["report_enabled"], "low": t.notify["low_balance_enabled"],
-                                                   "whatsapp": len(t.notify["whatsapp"]), "email": len(t.notify["email"])})
+    try:
+        nf.set_conf(t, report=report == "1", low=low == "1", whatsapp=[x for x in whatsapp.split(",") if x.strip()], email=[x for x in email.split(",") if x.strip()],
+                    whatsapp_freq=wa_freq, email_freq=email_freq, hour=int(hour), weekday=weekday)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    n = t.notify
+    ts.audit(db, user, "tenant.notify_set", t.id, {"report": n["report_enabled"], "low": n["low_balance_enabled"], "whatsapp": len(n["whatsapp"]), "email": len(n["email"]),
+                                                   "whatsapp_freq": n["whatsapp_freq"], "email_freq": n["email_freq"], "hour": n["hour"], "weekday": n["weekday"]})
     db.commit()
     return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
 
+
+@router.post("/ui/tenants/{tid}/send-report")
+def ui_send_report(tid: str, period: str = Form("yesterday"), date_from: str = Form(""), date_to: str = Form(""), ch_whatsapp: str = Form(""), ch_email: str = Form(""),
+                   extra_whatsapp: str = Form(""), extra_email: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import notify as nf
+    check_csrf(user, csrf)
+    t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
+    chans = tuple(c for c, on in (("whatsapp", ch_whatsapp), ("email", ch_email)) if on)
+    try:
+        nf.send_report_now(db, t, user, period, chans, date_from, date_to, extra_whatsapp, extra_email)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(422, str(e))
+    db.commit()
+    return RedirectResponse(f"/ui/notifications?tenant={tid}", status_code=303)
 
 @router.post("/ui/tenants/{tid}/delete")
 def ui_tenant_delete(tid: str, confirm: str = Form(""), purge: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):

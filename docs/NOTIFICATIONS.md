@@ -23,3 +23,15 @@ Sent from YOUR WhatsApp number and by SMTP email. Each customer has switches on 
 ## Seeing what was sent
 Desk Hub > Notifications lists every weekly report and low-balance alert by customer, kind, channel (WhatsApp or email), recipient and result
 (sent or failed, with the reason). Each tenant page shows its last 8. Migration 0013 creates the table; entries appear from the next `notify-run`.
+
+## How often, and on demand
+Each customer has a frequency per channel (tenant page > Customer notifications, or `set-notify`):
+- **Off, Daily, Weekly or Monthly**, separately for WhatsApp and email, so a client can have daily email and weekly WhatsApp.
+- **Send time** (Lagos hour) and, for weekly, the **weekday**.
+- Daily covers yesterday, weekly the 7 whole days before the send day, monthly the previous calendar month. A channel is sent once per period.
+  If the hub was down at the scheduled time, it still sends within the next 24 hours; later than that it waits for the next period.
+- Customers set up before this existed stay on weekly Monday 08:00 for both channels.
+
+**Send a report now** (tenant page, or `python -m app.cli send-report <slug> --period last7 --only whatsapp`): pick yesterday, last 7 or 30 days, this month so far,
+or custom dates; WhatsApp, email or both; optionally one extra number or email just this once. It does not change the schedule, and it appears on the
+Notifications page as "Sent on demand" with who triggered it.
