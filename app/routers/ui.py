@@ -1,5 +1,6 @@
 """Staff admin UI (HTTP Basic) and the customer's read-only usage page (signed link)."""
 import datetime as dt
+import re
 import uuid
 from decimal import Decimal
 
@@ -14,7 +15,7 @@ from .. import money
 from ..auth import staff as staff_auth
 from ..config import get_settings
 from ..db import get_db
-from ..models import AdjustmentRequest, AuditLog, FxRate, LedgerEntry, NotificationLog, RateCard, Tenant, now, uid
+from ..models import AdjustmentRequest, AuditLog, FxRate, LedgerEntry, NotificationLog, NotifyTemplate, RateCard, Tenant, now, uid
 from ..services import tenants as ts
 from ..services import wallet as wl
 from ..services import adjustments as adj_svc, fx as fx_svc, jobs, lifecycle as lc, rates as rates_svc
@@ -52,7 +53,7 @@ header .links a{padding:10px 12px}header .who{margin:6px 12px}header .links form
 @media(max-width:480px){.row{grid-template-columns:1fr}h2{font-size:18px}.card{padding:14px}}
 .kpi{font-size:28px;font-weight:650;letter-spacing:-.02em}.kpi small{font-size:13px;font-weight:500;color:var(--muted)}
 </style></head><body><header><b>Citichoice Desk Hub</b>{% if staff %}<input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Menu"><label for="navtoggle" class="burger" title="Menu">&#9776;</label>
-<nav class="links"><a href="/ui/overview">Overview</a><a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/notifications">Notifications</a><a href="/ui/audit">Audit</a>
+<nav class="links"><a href="/ui/overview">Overview</a><a href="/ui">Tenants</a><a href="/ui/plans">Plans</a><a href="/ui/rates">Rates &amp; FX</a><a href="/ui/adjustments">Adjustments</a><a href="/ui/notifications">Notifications</a><a href="/ui/templates">Templates</a><a href="/ui/audit">Audit</a>
 <span class="who">{{ me }}</span><form method="post" action="/auth/logout" style="margin:0"><input type="hidden" name="csrf" value="{{ me_csrf }}"><button class="ghost" style="color:#fff;border-color:#ffffff40">Sign out</button></form></nav>{% endif %}</header>
 <main>{% block body %}{% endblock %}</main></body></html>"""
 
@@ -64,16 +65,50 @@ T_BROKEN = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 
 T_NOTES = """{% extends "base" %}{% block body %}<h2>Notifications sent</h2>
 <div class="card"><form class="inline" method="get" action="/ui/notifications"><select name="tenant"><option value="">All customers</option>{% for tid, nm in names %}<option value="{{ tid }}" {{ 'selected' if tid==tenant }}>{{ nm }}</option>{% endfor %}</select>
-<select name="kind"><option value="">All kinds</option>{% for k, lbl in (("daily_report","Daily report"),("weekly_report","Weekly report"),("monthly_report","Monthly report"),("report_on_demand","Sent on demand"),("low_balance","Low balance")) %}<option value="{{ k }}" {{ 'selected' if kind==k }}>{{ lbl }}</option>{% endfor %}</select>
+<select name="kind"><option value="">All kinds</option>{% for k, lbl in (("daily_report","Daily report"),("weekly_report","Weekly report"),("monthly_report","Monthly report"),("report_on_demand","Sent on demand"),("low_balance","Low balance"),("test","Template tests")) %}<option value="{{ k }}" {{ 'selected' if kind==k }}>{{ lbl }}</option>{% endfor %}</select>
 <select name="channel"><option value="">WhatsApp and email</option><option value="whatsapp" {{ 'selected' if channel=='whatsapp' }}>WhatsApp</option><option value="email" {{ 'selected' if channel=='email' }}>Email</option></select>
 <select name="status"><option value="">Any result</option><option value="sent" {{ 'selected' if status=='sent' }}>Sent</option><option value="failed" {{ 'selected' if status=='failed' }}>Failed</option></select>
 <select name="per">{% for o in ('20','50','100') %}<option value="{{ o }}" {{ 'selected' if o==per }}>{{ o }} per page</option>{% endfor %}</select><button class="ghost">Apply</button>
 <span class="muted">{{ total }} record(s){% if pages > 1 %} &middot; page {{ page }} of {{ pages }}{% endif %}</span>
 {% if page > 1 %}<a href="{{ base }}&page={{ page-1 }}">&laquo; Newer</a>{% endif %}{% if page < pages %}<a href="{{ base }}&page={{ page+1 }}">Older &raquo;</a>{% endif %}</form></div>
-<div class="tablewrap"><table><tr><th>When</th><th>Customer</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th></tr>
+<div class="tablewrap"><table><tr><th>When</th><th>Customer</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th><th></th></tr>
 {% for n in rows %}<tr><td>{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ lookup.get(n.tenant_id, n.tenant_id) }}</td><td>{{ n.kind }}</td><td>{{ n.channel }}</td><td>{{ n.recipient }}</td>
-<td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td></tr>
-{% else %}<tr><td colspan="6" class="muted">Nothing here yet. Reports and alerts appear after notify-run sends them.</td></tr>{% endfor %}</table></div>{% endblock %}"""
+<td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td><td><a href="/ui/notifications/{{ n.id }}">View</a></td></tr>
+{% else %}<tr><td colspan="7" class="muted">Nothing here yet. Reports and alerts appear after notify-run sends them.</td></tr>{% endfor %}</table></div>{% endblock %}"""
+
+T_TEMPLATES = """{% extends "base" %}{% block body %}<h2>Notification templates</h2>
+<div class="card"><b>Placeholders</b> <span class="muted">(write them with double braces, for example {{ '{{business}}' }})</span>
+<div class="tablewrap"><table>{% for k, d in ph.items() %}<tr><td><code>{{ '{{' ~ k ~ '}}' }}</code></td><td class="muted">{{ d }}</td></tr>{% endfor %}</table></div>
+<p class="muted">Email: HTML is sent together with the plain-text version. Values are escaped in the HTML automatically, except the ones ending in <code>_html</code>. WhatsApp: the wording itself is fixed by Meta's approved template. Here you choose the template name and what goes into each numbered variable.</p></div>
+{% for key, title in (('report','Report (daily, weekly, monthly and on demand)'),('low_balance','Low-balance alert')) %}{% set tp = tpls[key] %}
+<h2>{{ title }} {% if tp.customised %}<span class="pill active">customised</span>{% else %}<span class="pill">default</span>{% endif %}</h2>
+<div class="card"><form method="post" action="/ui/templates/{{ key }}"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Email subject</label><input name="email_subject" value="{{ tp.email_subject }}" style="width:100%">
+<label>Email HTML</label><textarea name="email_html" rows="12" style="width:100%;font-family:ui-monospace,monospace;font-size:12px">{{ tp.email_html }}</textarea>
+<label>Email plain text</label><textarea name="email_text" rows="8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px">{{ tp.email_text }}</textarea>
+<div class="grid2" style="margin-top:8px"><div><label>WhatsApp template name (as approved in Meta)</label><input name="wa_template" value="{{ tp.wa_template }}"></div>
+<div><label>Template language</label><input name="wa_language" value="{{ tp.wa_language }}" style="width:100px"></div></div>
+<label>WhatsApp variables, one per line: line 1 fills {{ '{{1}}' }}, line 2 fills {{ '{{2}}' }}, and so on</label><textarea name="wa_params" rows="5" style="width:100%;font-family:ui-monospace,monospace;font-size:12px">{{ tp.wa_params|join('\n') }}</textarea>
+<label>Approved WhatsApp wording (only for previews and the log; must match what Meta approved)</label><textarea name="wa_wording" rows="3" style="width:100%">{{ tp.wa_wording }}</textarea>
+<p style="margin-top:10px"><button>Save</button> <button class="ghost" formaction="/ui/templates/{{ key }}/preview" formtarget="_blank">Preview</button></p></form>
+<form class="inline" method="post" action="/ui/templates/{{ key }}/test"><input type="hidden" name="csrf" value="{{ csrf }}"><input name="email" placeholder="Send a test to this email"><input name="whatsapp" placeholder="or this WhatsApp number"><button class="ghost">Send test (saved version)</button></form>
+{% if tp.customised %}<form method="post" action="/ui/templates/{{ key }}/reset" onsubmit="return confirm('Go back to the built-in wording?')" style="margin-top:6px"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Reset to default</button></form>{% endif %}</div>
+{% endfor %}{% endblock %}"""
+
+T_PREVIEW = """{% extends "base" %}{% block body %}<h2>Preview ({{ title }})</h2><p class="muted">Sample figures. Nothing was sent or saved.</p>
+<div class="card"><b>Email</b><p class="muted">Subject: <b>{{ r.subject }}</b></p><iframe sandbox srcdoc="{{ r.html }}" style="width:100%;height:600px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>
+<p class="muted">Plain-text version:</p><pre style="white-space:pre-wrap">{{ r.text }}</pre></div>
+<div class="card"><b>WhatsApp</b><p class="muted">Template: {{ wa_template }} ({{ wa_language }})</p><div style="background:#dcf8c6;color:#111;padding:12px 14px;border-radius:12px;max-width:420px;white-space:pre-wrap">{{ r.wa_wording }}</div>
+<p class="muted">Values sent: {{ r.wa_params|join(' | ') }}</p></div>{% endblock %}"""
+
+T_NOTE = """{% extends "base" %}{% block body %}<h2>Notification</h2>
+<div class="card"><div class="grid2"><div><div class="muted">When</div>{{ n.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</div><div><div class="muted">Customer</div>{{ who }}</div><div><div class="muted">Kind</div>{{ n.kind }}</div>
+<div><div class="muted">Channel</div>{{ n.channel }}</div><div><div class="muted">To</div>{{ n.recipient }}</div><div><div class="muted">Result</div><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> {{ n.detail or '' }}</div></div></div>
+{% if n.channel == 'email' %}<div class="card"><b>Subject:</b> {{ n.subject }}<br><br>{% if n.content_html %}<iframe sandbox srcdoc="{{ n.content_html }}" style="width:100%;height:600px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>{% endif %}
+{% if n.content_text %}<p class="muted">Plain-text version sent with it:</p><pre style="white-space:pre-wrap">{{ n.content_text }}</pre>{% else %}<p class="muted">The content was not recorded for this older entry (it was sent before content logging existed).</p>{% endif %}</div>
+{% else %}<div class="card"><b>WhatsApp template:</b> {{ n.wa_template }}<br><br>{% if n.content_text %}<div style="background:#dcf8c6;color:#111;padding:12px 14px;border-radius:12px;max-width:420px;white-space:pre-wrap">{{ n.content_text }}</div>
+<p class="muted">Values sent: {{ (n.wa_params or [])|join(' | ') }}</p>{% else %}<p class="muted">The content was not recorded for this older entry (it was sent before content logging existed).</p>{% endif %}</div>{% endif %}
+<p><a href="javascript:history.back()">&laquo; Back</a></p>{% endblock %}"""
 
 T_OVERVIEW = """{% extends "base" %}{% block body %}<h2>Overview</h2>
 <div class="row">
@@ -145,13 +180,15 @@ T_TENANT = """{% extends "base" %}{% block body %}<h2>{{ t.name }} <span class="
 <h2>AI replies: manual correction</h2><div class="card"><form class="inline" method="post" action="/ui/tenants/{{ t.id }}/ai-adjust"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input name="delta" inputmode="numeric" placeholder="+50 or -20" required style="width:130px"><input name="reason" placeholder="Reason (kept in the audit)" required style="min-width:260px"><button>Apply</button></form>
 <p class="muted">Adds to (or with a minus sign gives back) this month's AI-reply count. New replies keep counting normally on top of it.</p></div>
-<h2>Recent notifications</h2><div class="card"><div class="tablewrap"><table><tr><th>When</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th></tr>
-{% for n in notes %}<tr><td>{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ n.kind }}</td><td>{{ n.channel }}</td><td>{{ n.recipient }}</td><td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td></tr>
-{% else %}<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>{% endfor %}</table></div><p class="muted"><a href="/ui/notifications?tenant={{ t.id }}">See all for this customer</a></p></div>
+<h2>Recent notifications</h2><div class="card"><div class="tablewrap"><table><tr><th>When</th><th>Kind</th><th>Channel</th><th>To</th><th>Result</th><th></th></tr>
+{% for n in notes %}<tr><td>{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ n.kind }}</td><td>{{ n.channel }}</td><td>{{ n.recipient }}</td><td><span class="pill {{ 'active' if n.status=='sent' else 'suspended' }}">{{ n.status }}</span> <span class="muted">{{ n.detail or '' }}</span></td><td><a href="/ui/notifications/{{ n.id }}">View</a></td></tr>
+{% else %}<tr><td colspan="6" class="muted">Nothing sent yet.</td></tr>{% endfor %}</table></div><p class="muted"><a href="/ui/notifications?tenant={{ t.id }}">See all for this customer</a></p></div>
 <h2>Customer notifications</h2><div class="card"><form method="post" action="/ui/tenants/{{ t.id }}/notify">{% set n = t.notify or {} %}
 <input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid2">
 <div><label><input type="checkbox" name="report" value="1" {{ 'checked' if n.get('report_enabled') }}> Scheduled reports on</label></div>
 <div><label><input type="checkbox" name="low" value="1" {{ 'checked' if n.get('low_balance_enabled') }}> Low-balance alert</label></div>
+<div><label>Alert when credit is below (USD, 0 = automatic)</label><input name="low_usd" inputmode="decimal" value="{{ n.get('low_threshold_usd') or 0 }}"></div>
+<div><label>Then remind every (hours, 0 = once)</label><input name="low_repeat" inputmode="numeric" value="{{ n.get('low_repeat_hours') if n.get('low_repeat_hours') is not none else 24 }}"></div>
 <div><label>WhatsApp report</label><select name="wa_freq">{% for f in ('off','daily','weekly','monthly') %}<option value="{{ f }}" {{ 'selected' if (n.get('whatsapp_freq') or 'weekly')==f }}>{{ f|capitalize }}</option>{% endfor %}</select></div>
 <div><label>Email report</label><select name="email_freq">{% for f in ('off','daily','weekly','monthly') %}<option value="{{ f }}" {{ 'selected' if (n.get('email_freq') or 'weekly')==f }}>{{ f|capitalize }}</option>{% endfor %}</select></div>
 <div><label>Send at (Lagos time)</label><select name="hour">{% for h in range(24) %}<option value="{{ h }}" {{ 'selected' if (n.get('hour') if n.get('hour') is not none else 8)==h }}>{{ '%02d:00' % h }}</option>{% endfor %}</select></div>
@@ -223,7 +260,7 @@ def _rate_txt(micro) -> str:
     return t or "0"
 
 
-env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW, "notifications": T_NOTES, "tenant_broken": T_BROKEN,
+env = Environment(loader=DictLoader({"base": BASE, "list": T_LIST, "tenant": T_TENANT, "rates": T_RATES, "plans": T_PLANS, "overview": T_OVERVIEW, "templates": T_TEMPLATES, "preview": T_PREVIEW, "note": T_NOTE, "notifications": T_NOTES, "tenant_broken": T_BROKEN,
                                      "audit": T_AUDIT, "usage": T_USAGE, "adj": T_ADJ}),
                   autoescape=select_autoescape(default=True, default_for_string=True))
 env.filters["rate"] = _rate_txt
@@ -310,19 +347,21 @@ def ui_ledger_csv(tid: str, user: str = Depends(staff), db: Session = Depends(ge
 
 @router.post("/ui/tenants/{tid}/notify")
 def ui_tenant_notify(tid: str, report: str = Form(""), low: str = Form(""), whatsapp: str = Form(""), email: str = Form(""), wa_freq: str = Form("weekly"),
-                     email_freq: str = Form("weekly"), hour: str = Form("8"), weekday: str = Form("0"), csrf: str = Form(...),
+                     email_freq: str = Form("weekly"), hour: str = Form("8"), weekday: str = Form("0"), low_usd: str = Form("0"), low_repeat: str = Form("24"), csrf: str = Form(...),
                      user: str = Depends(staff), db: Session = Depends(get_db)):
     from ..services import notify as nf
     check_csrf(user, csrf)
     t = db.get(Tenant, tid) or (_ for _ in ()).throw(HTTPException(404))
     try:
         nf.set_conf(t, report=report == "1", low=low == "1", whatsapp=[x for x in whatsapp.split(",") if x.strip()], email=[x for x in email.split(",") if x.strip()],
-                    whatsapp_freq=wa_freq, email_freq=email_freq, hour=int(hour), weekday=weekday)
+                    whatsapp_freq=wa_freq, email_freq=email_freq, hour=int(hour), weekday=weekday,
+                    low_threshold_usd=float(low_usd or 0), low_repeat_hours=int(low_repeat or 0))
     except ValueError as e:
         raise HTTPException(422, str(e))
     n = t.notify
     ts.audit(db, user, "tenant.notify_set", t.id, {"report": n["report_enabled"], "low": n["low_balance_enabled"], "whatsapp": len(n["whatsapp"]), "email": len(n["email"]),
-                                                   "whatsapp_freq": n["whatsapp_freq"], "email_freq": n["email_freq"], "hour": n["hour"], "weekday": n["weekday"]})
+                                                   "whatsapp_freq": n["whatsapp_freq"], "email_freq": n["email_freq"], "hour": n["hour"], "weekday": n["weekday"],
+                                                   "low_threshold_usd": n["low_threshold_usd"], "low_repeat_hours": n["low_repeat_hours"]})
     db.commit()
     return RedirectResponse(f"/ui/tenants/{tid}", status_code=303)
 
@@ -444,6 +483,93 @@ def ui_notifications(tenant: str = "", kind: str = "", channel: str = "", status
     base = "/ui/notifications?" + urlencode({"tenant": tenant, "kind": kind, "channel": channel, "status": status, "per": per})
     return render("notifications", user, staff=True, rows=rows, names=names, lookup=dict(names), tenant=tenant, kind=kind, channel=channel, status=status,
                   per=per, page=page, pages=pages, total=total, base=base)
+
+
+def _tpl_from_form(email_subject, email_html, email_text, wa_template, wa_language, wa_params, wa_wording) -> dict:
+    from ..services import notify as nf
+    params = [x.strip() for x in wa_params.replace("\r", "").split("\n") if x.strip()]
+    if not email_subject.strip() or not email_html.strip() or not email_text.strip():
+        raise HTTPException(422, "subject, HTML and plain text are all required")
+    if not 1 <= len(params) <= 10:
+        raise HTTPException(422, "WhatsApp variables: give between 1 and 10 lines")
+    nums = {int(m) for m in re.findall(r"\{\{\s*(\d+)\s*\}\}", wa_wording)}
+    if nums != set(range(1, len(params) + 1)):
+        raise HTTPException(422, f"the wording uses variables {sorted(nums)} but you gave {len(params)} lines: they must match exactly, as in Meta's template")
+    if not re.fullmatch(r"[a-z0-9_]{1,200}", wa_template.strip()) or not re.fullmatch(r"[a-zA-Z_]{2,10}", wa_language.strip()):
+        raise HTTPException(422, "template name: lowercase letters, digits and _ only; language like en or en_US")
+    bad = nf.unknown_placeholders(email_subject, email_html, email_text, *params)
+    if bad:
+        raise HTTPException(422, "unknown placeholder(s): " + ", ".join("{{" + b + "}}" for b in sorted(bad)))
+    return {"email_subject": email_subject.strip(), "email_html": email_html, "email_text": email_text, "wa_template": wa_template.strip(),
+            "wa_language": wa_language.strip(), "wa_params": params, "wa_wording": wa_wording.strip()}
+
+
+@router.get("/ui/templates", response_class=HTMLResponse)
+def ui_templates(user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import notify as nf
+    return render("templates", user, staff=True, ph=nf.PLACEHOLDERS, tpls={k: nf.get_template(db, k) for k in ("report", "low_balance")}, csrf=csrf_token(user))
+
+
+@router.post("/ui/templates/{key}")
+def ui_template_save(key: str, email_subject: str = Form(...), email_html: str = Form(...), email_text: str = Form(...), wa_template: str = Form(...),
+                     wa_language: str = Form("en"), wa_params: str = Form(...), wa_wording: str = Form(...), csrf: str = Form(...),
+                     user: str = Depends(staff), db: Session = Depends(get_db)):
+    check_csrf(user, csrf)
+    if key not in ("report", "low_balance"):
+        raise HTTPException(404)
+    d = _tpl_from_form(email_subject, email_html, email_text, wa_template, wa_language, wa_params, wa_wording)
+    row = db.get(NotifyTemplate, key) or NotifyTemplate(key=key)
+    row.email_subject, row.email_html, row.email_text, row.wa_template, row.wa_language, row.wa_params, row.wa_wording = (
+        d["email_subject"], d["email_html"], d["email_text"], d["wa_template"], d["wa_language"], d["wa_params"], d["wa_wording"])
+    row.updated_by = user
+    db.add(row)
+    ts.audit(db, user, "notify.template_save", None, {"template": key, "wa_template": d["wa_template"]})
+    db.commit()
+    return RedirectResponse("/ui/templates", status_code=303)
+
+
+@router.post("/ui/templates/{key}/reset")
+def ui_template_reset(key: str, csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    check_csrf(user, csrf)
+    row = db.get(NotifyTemplate, key)
+    if row:
+        db.delete(row)
+        ts.audit(db, user, "notify.template_reset", None, {"template": key})
+        db.commit()
+    return RedirectResponse("/ui/templates", status_code=303)
+
+
+@router.post("/ui/templates/{key}/preview", response_class=HTMLResponse)
+def ui_template_preview(key: str, email_subject: str = Form(...), email_html: str = Form(...), email_text: str = Form(...), wa_template: str = Form(...),
+                        wa_language: str = Form("en"), wa_params: str = Form(...), wa_wording: str = Form(...), csrf: str = Form(...),
+                        user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import notify as nf
+    check_csrf(user, csrf)
+    d = _tpl_from_form(email_subject, email_html, email_text, wa_template, wa_language, wa_params, wa_wording)
+    ctx = nf.sample_report_ctx() if key == "report" else nf.sample_low_ctx()
+    return render("preview", user, staff=True, title="report" if key == "report" else "low-balance alert", r=nf.render_all(d, ctx), wa_template=d["wa_template"], wa_language=d["wa_language"])
+
+
+@router.post("/ui/templates/{key}/test")
+def ui_template_test(key: str, email: str = Form(""), whatsapp: str = Form(""), csrf: str = Form(...), user: str = Depends(staff), db: Session = Depends(get_db)):
+    from ..services import notify as nf
+    check_csrf(user, csrf)
+    if key not in ("report", "low_balance"):
+        raise HTTPException(404)
+    try:
+        nf.send_test(db, key, user, email, whatsapp)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(422, str(e))
+    db.commit()
+    return RedirectResponse("/ui/notifications?kind=test", status_code=303)
+
+
+@router.get("/ui/notifications/{nid}", response_class=HTMLResponse)
+def ui_notification(nid: str, user: str = Depends(staff), db: Session = Depends(get_db)):
+    n = db.get(NotificationLog, nid) or (_ for _ in ()).throw(HTTPException(404))
+    t = db.get(Tenant, n.tenant_id)
+    return render("note", user, staff=True, n=n, who=(t.name if t else ("(test)" if n.tenant_id == "test" else n.tenant_id)))
 
 
 KIND_LABELS = {"wallet_credit": "Credit funds", "wallet_debit": "Take funds back", "receivable_writeoff": "Write off debt",

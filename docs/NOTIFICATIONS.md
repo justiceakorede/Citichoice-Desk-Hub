@@ -35,3 +35,24 @@ Each customer has a frequency per channel (tenant page > Customer notifications,
 **Send a report now** (tenant page, or `python -m app.cli send-report <slug> --period last7 --only whatsapp`): pick yesterday, last 7 or 30 days, this month so far,
 or custom dates; WhatsApp, email or both; optionally one extra number or email just this once. It does not change the schedule, and it appears on the
 Notifications page as "Sent on demand" with who triggered it.
+
+## Low-balance alerts: your level and your interval
+Per customer (tenant page, or `set-notify --low-threshold-usd 10 --low-repeat-hours 24`):
+- **Alert when credit is below X USD** (converted at today's rate; credit means what is available minus anything owed). 0 keeps the automatic levels
+  (empty, owing, or under 20% of the last 30 days' spend).
+- **Remind every N hours** while it stays below; 0 sends once per dip. When the credit is back above the level the alert re-arms.
+Nothing is sent unless the customer's **Low-balance alert** box is ticked and a WhatsApp number or email is saved.
+
+If an alert you expected did not go out, run `python -m app.cli notify-run --dry-run`. It prints a `skipped` line per customer with the reason
+(switched off, no recipients, above the level, already alerted and when the next reminder is due, exchange rate missing). Each real run also writes a
+`notify.run` entry to the Audit page, so you can see whether the hourly task is running at all.
+
+## Editing the wording
+Desk Hub > Templates. Placeholders are written `{{business}}`, `{{balance}}`, `{{topup_link}}` and so on (the page lists them all). Email is sent as HTML plus a plain-text copy.
+For WhatsApp the wording is fixed by Meta's approved template, so you choose the template name and what goes in each numbered variable; keep the "approved wording" box
+the same as Meta's so previews and the log match. Preview shows both with sample figures, and Send test sends the saved version to an address of yours.
+Set `NOTIFY_TOPUP_URL` (your client-area link) so the Buy credit button and `{{topup_link}}` work.
+
+## Seeing exactly what was sent
+Notifications > View shows the real email (subject, HTML and plain text) or the WhatsApp template, its variables and the resulting wording, exactly as sent.
+Entries from before this was added show no content. Migration 0014 is required.

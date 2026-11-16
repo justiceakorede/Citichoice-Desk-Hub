@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     notify_wa_report_template: str = "weekly_report"
     notify_wa_low_template: str = "low_balance_alert"
     notify_wa_language: str = "en"
+    notify_topup_url: str = ""            # where the "Buy credit" button/link in reports and alerts points (your client area)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

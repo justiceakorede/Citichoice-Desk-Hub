@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import (DDL, JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index,
-                        Integer, Numeric, String, UniqueConstraint, text)
+                        Integer, Numeric, String, Text, UniqueConstraint, text)
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -547,13 +547,33 @@ for _d in _SQLITE_TRIGGERS:
 
 
 class NotificationLog(Base):
-    """Every weekly report and low-balance alert the hub tried to send, by channel and recipient. No FK: the log outlives the tenant."""
+    """Every weekly report and low-balance alert the hub tried to send, by channel and recipient, WITH the exact content. No FK: the log outlives the tenant."""
     __tablename__ = "notification_log"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
-    kind: Mapped[str] = mapped_column(String(30))        # weekly_report | low_balance
+    kind: Mapped[str] = mapped_column(String(30))        # daily_report | weekly_report | monthly_report | report_on_demand | low_balance | test
     channel: Mapped[str] = mapped_column(String(20))     # whatsapp | email
     recipient: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20))      # sent | failed
     detail: Mapped[str | None] = mapped_column(String(400))
+    subject: Mapped[str | None] = mapped_column(String(300))          # email subject
+    content_text: Mapped[str | None] = mapped_column(Text)            # exactly what was sent: email plain text, or the WhatsApp message wording
+    content_html: Mapped[str | None] = mapped_column(Text)            # email HTML as sent
+    wa_template: Mapped[str | None] = mapped_column(String(120))      # WhatsApp template name and language
+    wa_params: Mapped[list | None] = mapped_column(JSON)              # the values sent for {{1}}, {{2}}, ...
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class NotifyTemplate(Base):
+    """Editable wording for customer notifications. One row per key (report, low_balance); defaults live in code until edited."""
+    __tablename__ = "notify_templates"
+    key: Mapped[str] = mapped_column(String(30), primary_key=True)
+    email_subject: Mapped[str] = mapped_column(String(300))
+    email_html: Mapped[str] = mapped_column(Text)
+    email_text: Mapped[str] = mapped_column(Text)
+    wa_template: Mapped[str] = mapped_column(String(120))            # the Meta-approved template name
+    wa_language: Mapped[str] = mapped_column(String(20), default="en")
+    wa_params: Mapped[list] = mapped_column(JSON)                    # what goes in {{1}}, {{2}}, ... (may use placeholders)
+    wa_wording: Mapped[str] = mapped_column(Text)                    # the approved wording with {{1}}.. (for previews and the log only)
+    updated_by: Mapped[str | None] = mapped_column(String(200))
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
