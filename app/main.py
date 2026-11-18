@@ -14,7 +14,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from .context import new_request_id
-from .routers import admin, auth, customer, internal, ui
+from .routers import admin, auth, customer, internal, ui, wa_gateway
 
 
 @asynccontextmanager
@@ -34,12 +34,13 @@ app.include_router(internal.router)
 app.include_router(ui.router)
 app.include_router(auth.router)
 app.include_router(customer.router)
+app.include_router(wa_gateway.router)
 
 log = logging.getLogger("hub")
 
 
 STAFF_PREFIXES = ("/ui", "/auth")
-API_PREFIXES = ("/admin", "/internal", "/customer", "/u/")
+API_PREFIXES = ("/admin", "/internal", "/customer", "/u/", "/wa/")
 
 
 def _host(request: Request) -> str:

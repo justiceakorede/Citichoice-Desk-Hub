@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     wisecp_api_key: str = ""             # a READ-ONLY key limited to the finance scope; set only in the deployment platform
     wisecp_base_currency: str = "USD"    # WiseCP's base currency; the hub refuses rates if WiseCP's base ever changes
     marketing_min_balance_usd: Decimal = Decimal("5")   # minimum wallet balance for marketing sends, converted to each wallet currency
+    # WhatsApp gateway: Chatwoot sends every WhatsApp message through the hub (WHATSAPP_CLOUD_BASE_URL), so an empty wallet stops
+    # ALL sends (agents, bot, campaigns) before Meta is contacted. See docs/WA_GATEWAY.md.
+    wa_gateway_secret: str = ""              # path secret: Chatwoot base URL = https://hub.../wa/<secret>. Empty = gateway disabled
+    wa_gateway_upstream: str = "https://graph.facebook.com"
+    wa_gateway_unmapped: str = "allow"       # a phone_number_id no tenant owns: allow (forward untouched) | block
+    wa_gateway_template_category: str = "marketing"   # templates carry no category in the send call; price them as the dearest, to be safe
+    wa_gateway_timeout: float = 30.0
     ai_pack_size: int = 5000
     suspend_grace_days: int = 7
     trusted_proxy_hops: int = 1          # Traefik (Coolify) = 1; Cloudflare + Traefik = 2
