@@ -145,6 +145,36 @@ def test_currency_mismatch_and_unresolved_currency_wait_for_staff(client, cw):
     assert balance(client, tid) == 0
 
 
+def _usd_topup(amount="10"):
+    items = [{"id": 31, "description": "WhatsApp Prepaid Wallet Top-Up", "quantity": 1, "amount": amount, "user_pid": "svc-1", "addon_id": 48}]
+    return raw_invoice(currency="USD", total=amount, items=items, payments=[{"amount_in": amount, "pmethod": "Paystack"}])
+
+
+def test_usd_payment_into_ngn_wallet_is_converted_once_when_enabled(client, cw, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "topup_convert_currency", True)
+    tid = mk_tenant(client, cw)                                       # NGN wallet, USD->NGN 1600 in the fixtures
+    use_invoice(_usd_topup())
+    r = client.post("/admin/topups/invoice/14", headers=H(ADMIN)).json()["results"][0]
+    assert r["result"] == "credited" and r["converted_from"] == "USD" and balance(client, tid) == 16_000_000_000   # $10 = NGN 16,000
+    assert client.post("/admin/topups/invoice/14", headers=H(ADMIN)).json()["results"][0]["result"] == "already_credited"
+    assert balance(client, tid) == 16_000_000_000
+
+
+def test_conversion_waits_for_staff_when_off_or_rate_is_stale(client, cw, monkeypatch):
+    from app.config import get_settings
+    tid = mk_tenant(client, cw)
+    use_invoice(_usd_topup())
+    assert client.post("/admin/topups/invoice/14", headers=H(ADMIN)).json()["results"][0]["reason"] == "currency_mismatch"      # switch off
+    monkeypatch.setattr(get_settings(), "topup_convert_currency", True)
+    import datetime as dt
+    from app.services import wisecp as wsvc
+    real = wsvc.now
+    monkeypatch.setattr(wsvc, "now", lambda: real() + dt.timedelta(days=30))        # the 1-hour-old rate is now a month old
+    assert client.post("/admin/topups/invoice/14", headers=H(ADMIN)).json()["results"][0]["reason"] == "currency_mismatch"      # stale rate
+    assert balance(client, tid) == 0
+
+
 def test_bank_transfer_without_payment_row_waits_for_staff(client, cw):
     tid = mk_tenant(client, cw)
     use_invoice(raw_invoice(payments=[]))

@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # WhatsApp credit bought in WiseCP (docs/WISECP_AUDIT.md, "Top-up contract")
     wisecp_topup_addon_id: str = "48"                              # the add-on that sells Desk wallet credit
     wisecp_topup_description: str = "WhatsApp Prepaid Wallet Top-Up"   # fallback match on the invoice line text
+    topup_convert_currency: bool = False       # a top-up paid in another currency than the wallet's is converted at the hub's fresh WiseCP rate; False = wait for staff
     topup_review_threshold_usd: Decimal = Decimal("0")             # anomalous paid invoices above this wait for staff; 0 = all wait
 
     fx_buffer_pct: Decimal = Decimal("0.03")   # disclosed currency buffer

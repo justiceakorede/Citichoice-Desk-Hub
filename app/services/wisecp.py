@@ -213,14 +213,30 @@ def process_invoice(db: Session, inv: Invoice, actor: str) -> dict:
             ts.audit(db, actor, "topup.needs_review", t.id, {"invoice": inv.invoice_id, "line": line.line_id, "reason": "currency_unresolved"}, outcome="held")
             results.append({**res, "result": "needs_review", "reason": "currency_unresolved"}); continue
         w = wl.get_wallet(db, t.id)
-        if inv.currency != w.currency:
-            ts.audit(db, actor, "topup.needs_review", t.id, {"invoice": inv.invoice_id, "line": line.line_id, "reason": "currency_mismatch",
-                                                             "invoice_currency": inv.currency, "wallet_currency": w.currency}, outcome="held")
-            results.append({**res, "result": "needs_review", "reason": "currency_mismatch"}); continue
         flags = {}
+        if inv.currency != w.currency:
+            # The customer paid in a different currency than the wallet's. Credit the same value in the wallet's currency at the hub's
+            # current WiseCP-sourced rate (no buffer: this is the customer's own money, not a provider cost), but only when switched on
+            # and only with a fresh rate. Anything else waits for staff.
+            why_held, rate = "currency_mismatch", None
+            if get_settings().topup_convert_currency:
+                try:
+                    rate, _ = fx.rate_between(db, inv.currency, w.currency, now())
+                except fx.FxError as e:
+                    why_held = "currency_mismatch"; rate = None
+                    held_note = str(e)
+                else:
+                    held_note = None
+            if rate is None:
+                ts.audit(db, actor, "topup.needs_review", t.id, {"invoice": inv.invoice_id, "line": line.line_id, "reason": why_held,
+                                                                 "invoice_currency": inv.currency, "wallet_currency": w.currency,
+                                                                 **({"fx": held_note} if get_settings().topup_convert_currency and held_note else {})}, outcome="held")
+                results.append({**res, "result": "needs_review", "reason": why_held}); continue
+            flags.update({"converted_from": inv.currency, "original_amount": str(amount), "fx_rate": str(rate)})
+            amount = amount * rate
         if inv.payment_methods and all(m == "Balance" for m in inv.payment_methods):
             flags["funding_source"] = "wisecp_balance"
-        why = _anomaly(inv, w.currency)
+        why = _anomaly(inv, inv.currency)
         if why:
             usd = _usd_value(db, amount, w.currency)
             limit = get_settings().topup_review_threshold_usd
@@ -229,7 +245,7 @@ def process_invoice(db: Session, inv: Invoice, actor: str) -> dict:
                                                                  "amount": str(amount), "currency": w.currency}, outcome="held")
                 results.append({**res, "result": "needs_review", "reason": why}); continue
             flags["flag"] = why
-        # Never credit more than was charged: cut anything finer than the currency's minor unit (a % discount can produce it).
+        # Never credit more than was charged: cut anything finer than the currency's minor unit (a % discount or a conversion can produce it).
         amount = amount.quantize(Decimal(1).scaleb(-money.exponent_of(w.currency)), rounding=ROUND_DOWN)
         if amount <= 0:
             results.append({**res, "result": "skipped", "reason": "zero_amount"}); continue
