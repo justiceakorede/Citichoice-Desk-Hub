@@ -4,6 +4,7 @@
   expire-reservations   release holds that never got an outcome (run every 5 minutes)
   list-keys         show API keys (name, scope, tenants, expiry, revoked); never the secret
   revoke-key NAME   revoke an API key immediately
+  set-key-ips NAME --ip 1.2.3.4 [--ip ...] | --any   change the addresses an active key may be used from (--any removes the restriction)
   worker [--once]   process Chatwoot provisioning jobs
   escalate          lock tenants paused longer than SUSPEND_GRACE_DAYS (run daily)
   wisecp-invoice ID        show how the hub reads a WiseCP invoice and what it WOULD credit (changes nothing)
@@ -53,6 +54,7 @@ def main():
     k.add_argument("--tenant", action="append", default=[]); k.add_argument("--ip", action="append", default=[])
     k.add_argument("--days", type=int, default=365); k.add_argument("--key", help="use this exact key text instead of generating one (32+ characters: letters, digits, - and _)")
     rkk = sub.add_parser("rekey"); rkk.add_argument("name"); rkk.add_argument("--key", required=True)
+    ski = sub.add_parser("set-key-ips"); ski.add_argument("name"); ski.add_argument("--ip", action="append", default=[]); ski.add_argument("--any", action="store_true")
     sub.add_parser("expire-reservations"); sub.add_parser("list-keys"); rk = sub.add_parser("revoke-key"); rk.add_argument("name")
     w = sub.add_parser("worker"); w.add_argument("--once", action="store_true")
     sub.add_parser("escalate"); sub.add_parser("seed-plans")
@@ -126,7 +128,18 @@ def main():
             for k in db.scalars(select(ApiKey).order_by(ApiKey.created_at)):
                 tenants = [r for r in db.scalars(select(ApiKeyTenant.tenant_id).where(ApiKeyTenant.api_key_id == k.id))]
                 print(f"{k.name:30} {','.join(k.scopes):9} tenants={len(tenants)} expires={k.expires_at.date() if k.expires_at else '-'} "
-                      f"last_used={k.last_used_at.date() if k.last_used_at else 'never'} {'REVOKED' if k.revoked else 'active'}")
+                      f"last_used={k.last_used_at.date() if k.last_used_at else 'never'} {'REVOKED' if k.revoked else 'active'} ips={','.join(k.allowed_ips or []) or 'any'}")
+        elif a.cmd == "set-key-ips":
+            if bool(a.ip) == bool(a.any):
+                raise SystemExit("give at least one --ip, or --any to remove the restriction (not both)")
+            keys = list(db.scalars(select(ApiKey).where(ApiKey.name == a.name, ApiKey.revoked.is_(False))))
+            if not keys:
+                raise SystemExit(f"no active key named {a.name} (python -m app.cli list-keys)")
+            for k in keys:
+                before, k.allowed_ips = list(k.allowed_ips or []), ([] if a.any else [i.strip() for i in a.ip])
+                ts.audit(db, "cli", "apikey.set_ips", None, {"name": a.name, "before": before, "after": k.allowed_ips})
+            db.commit()
+            print(f"'{a.name}' may now be used from: {', '.join(a.ip) if a.ip else 'any address'}")
         elif a.cmd == "revoke-key":
             keys = list(db.scalars(select(ApiKey).where(ApiKey.name == a.name)))
             if not keys:
