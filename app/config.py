@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     wa_gateway_unmapped: str = "allow"       # a phone_number_id no tenant owns: allow (forward untouched) | block
     wa_gateway_template_category: str = "marketing"   # templates carry no category in the send call; price them as the dearest, to be safe
     wa_gateway_timeout: float = 30.0
+    # Add Funds / auto-recharge (docs/AUTO_RECHARGE.md)
+    wallet_presets_json: str = '{"NGN": [10000, 25000, 50000, 100000, 250000, 500000], "USD": [10, 25, 50, 100, 250, 500]}'
+    recharge_min_usd: Decimal = Decimal("5")            # smallest single top-up, in USD (converted to the wallet's currency)
+    recharge_max_usd: Decimal = Decimal("2000")         # largest single top-up
+    recharge_max_failures: int = 3                      # consecutive failed automatic recharges before it pauses itself
+    recharge_pay_timeout_minutes: int = 30              # an automatic recharge invoice not paid by then is cancelled and counts as a failure
+    recharge_min_gap_minutes: int = 10                  # no new automatic recharge sooner than this after the last one
+    recharge_daily_limit: int = 3                       # at most this many automatic recharges per tenant per day
+    recharge_manual_expiry_hours: int = 72              # an unpaid Add Funds invoice stops being watched after this
     ai_pack_size: int = 5000
     suspend_grace_days: int = 7
     trusted_proxy_hops: int = 1          # Traefik (Coolify) = 1; Cloudflare + Traefik = 2

@@ -15,6 +15,7 @@ from ..schemas import (AiAdjustBody, ChannelCreate, ChannelPatch, CreditBody, Cr
                        RateBody, RetryBody, SuspendBody, TenantCreate, TenantPatch)
 from ..security import admin_key
 from ..services import ai_allowance
+from ..services import auto_recharge as rch
 from ..services import channels as chs
 from ..services import fx as fx_svc
 from ..services import pricing
@@ -638,3 +639,53 @@ def topup_invoice(invoice_id: str, request: Request, db: Session = Depends(get_d
              "results": [x.get("result") + (":" + x["reason"] if x.get("reason") else "") for x in out.get("results", [])], "note": out.get("note")})
     db.commit()
     return out
+
+
+# ---------------------------------------------------------------------------------------------------- Add Funds / auto-recharge
+class AutoRechargeBody(BaseModel):
+    enabled: bool
+    threshold: str | None = None
+    amount: str | None = None
+    monthly_cap: str | None = None
+    client_id: str | None = None
+
+
+class AddFundsBody(BaseModel):
+    amount: str
+    client_id: str
+
+
+def _rch(fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except rch.RechargeError as e:
+        raise HTTPException(422, {"code": e.code, "message": str(e)})
+    except LookupError:
+        raise HTTPException(404, {"code": "wallet_not_found", "message": "wallet not found"})
+
+
+@router.get("/tenants/{tid}/wallet-settings")
+def wallet_settings(tid: str, db: Session = Depends(get_db)):
+    """Everything the customer's wallet card needs: balance, presets, limits, auto-recharge settings, recent top-ups."""
+    return _rch(rch.view, db, _t(db, tid))
+
+
+@router.put("/tenants/{tid}/auto-recharge")
+def auto_recharge_save(tid: str, body: AutoRechargeBody, request: Request, db: Session = Depends(get_db)):
+    t = _t(db, tid)
+    _rch(rch.save_settings, db, t, request.state.actor, enabled=body.enabled, threshold=body.threshold, amount=body.amount,
+         monthly_cap=body.monthly_cap, client_id=body.client_id)
+    db.commit()
+    return rch.view(db, t)
+
+
+@router.post("/tenants/{tid}/add-funds")
+def add_funds(tid: str, body: AddFundsBody, request: Request, db: Session = Depends(get_db), wc: wisecp_svc.WisecpClient = Depends(get_wisecp)):
+    """Raise a top-up invoice for the customer to pay with any gateway. The wallet is credited when WiseCP shows it paid."""
+    return _rch(rch.create_manual, db, _t(db, tid), wc, request.state.actor, body.amount, body.client_id)
+
+
+@router.post("/recharge/run")
+def recharge_run(db: Session = Depends(get_db), wc: wisecp_svc.WisecpClient = Depends(get_wisecp)):
+    """One pass of the recharge engine (the worker does this every minute); handy for staff and tests."""
+    return rch.run(db, wc)

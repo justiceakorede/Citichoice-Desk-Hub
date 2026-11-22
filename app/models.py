@@ -577,3 +577,37 @@ class NotifyTemplate(Base):
     wa_wording: Mapped[str] = mapped_column(Text)                    # the approved wording with {{1}}.. (for previews and the log only)
     updated_by: Mapped[str | None] = mapped_column(String(200))
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AutoRecharge(Base):
+    """A tenant's wish to have its WhatsApp wallet topped up automatically from the customer's WiseCP Account Balance."""
+    __tablename__ = "auto_recharge"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    wisecp_client_id: Mapped[str | None] = mapped_column(String(32))            # supplied by the WiseCP module (trusted caller) on every save
+    threshold_micro: Mapped[int] = mapped_column(BigInteger, default=0)         # recharge when the funds fall below this (wallet currency)
+    amount_micro: Mapped[int] = mapped_column(BigInteger, default=0)            # how much each recharge adds (before tax)
+    monthly_cap_micro: Mapped[int] = mapped_column(BigInteger, default=0)       # most that may be recharged automatically in a calendar month
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    paused_reason: Mapped[str | None] = mapped_column(String(60))               # set after repeated failures; cleared when the customer saves again
+    updated_by: Mapped[str | None] = mapped_column(String(200))
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class RechargeAttempt(Base):
+    """One top-up invoice raised for a wallet, by auto-recharge or by the customer's Add Funds button. Settled by polling WiseCP."""
+    __tablename__ = "recharge_attempts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))                               # auto | manual
+    currency: Mapped[str] = mapped_column(String(3))
+    amount_micro: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(20), default="creating")         # creating | awaiting_payment | credited | failed | expired | review
+    invoice_id: Mapped[str | None] = mapped_column(String(32))
+    error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+    settled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (Index("ix_recharge_tenant_time", "tenant_id", "created_at"),
+                      Index("uq_one_open_auto_recharge", "tenant_id", unique=True,
+                            postgresql_where=text("kind = 'auto' and status in ('creating', 'awaiting_payment')"),
+                            sqlite_where=text("kind = 'auto' and status in ('creating', 'awaiting_payment')")))

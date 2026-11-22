@@ -144,6 +144,60 @@ class WisecpClient:
             inv.currency = self._currency_code(inv.currency_id)
         return inv
 
+    def _call(self, method: str, path: str, json_body: dict | None = None) -> dict:
+        if not (self.base and self.key):
+            raise WisecpError("not_configured", "WISECP_API_URL / WISECP_API_KEY are not set")
+        try:
+            r = self.http.request(method, f"{self.base}/api/v1/admin{path}", headers={"Authorization": f"Bearer {self.key}"}, json=json_body)
+        except httpx.HTTPError as e:
+            raise WisecpError("unreachable", type(e).__name__) from e
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        if r.status_code in (401, 403):
+            raise WisecpError("insufficient_scope", "the WiseCP key lacks permission for this call")
+        if r.status_code >= 400:
+            err = body.get("error") if isinstance(body, dict) else None
+            code = (err.get("code") if isinstance(err, dict) else None) or f"http_{r.status_code}"
+            raise WisecpError(str(code), (err.get("message") if isinstance(err, dict) else "") or str(code))
+        return body if isinstance(body, dict) else {}
+
+    def currency_id_for(self, code: str) -> int | None:
+        """WiseCP's numeric id for an ISO currency code, or None if it cannot say (nothing is then created)."""
+        body = self._call("GET", "/financial/currencies")
+        rows = body.get("data", body)
+        if isinstance(rows, dict):
+            rows = rows.get("items") or rows.get("currencies") or list(rows.values())
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and str(_first(row, "code", "currency", "iso", "name", default="")).upper() == code.upper():
+                cid = _first(row, "id")
+                if str(cid).isdigit():
+                    return int(cid)
+        return None
+
+    def create_topup_invoice(self, client_id: str, service_id: str, currency: str, amount: Decimal, description: str, *,
+                             pay_from_balance: bool, note: str = "") -> Invoice:
+        """Issue a one-line top-up invoice on the customer's Desk service. `pay_from_balance` asks WiseCP to settle it from the
+        customer's Account Balance (their Automatic Payments setting decides when). [UNVERIFIED against a live WiseCP.]"""
+        if not (str(client_id).isdigit() and str(service_id).isdigit()):
+            raise WisecpError("bad_ids", "WiseCP client and service ids must be numeric")
+        cur_id = self.currency_id_for(currency)
+        if cur_id is None:
+            raise WisecpError("currency_unknown", f"WiseCP has no currency {currency}")
+        body = {"client_id": int(client_id), "currency_id": cur_id, "status": "unpaid", "send_notification": not pay_from_balance,
+                "items": [{"description": description, "quantity": 1, "amount": float(amount), "user_pid": int(service_id)}]}
+        if pay_from_balance:
+            body["payment_method"] = "Balance"
+            body["due_date"] = now().strftime("%Y-%m-%d %H:%M:%S")
+        inv = parse_invoice(self._call("POST", "/invoices", body))
+        if inv.currency is None:
+            inv.currency = currency.upper()
+        return inv
+
+    def cancel_invoice(self, invoice_id: str) -> None:
+        self._call("PATCH", f"/invoices/{invoice_id}/status", {"status": "cancelled"})      # [UNVERIFIED] path; failure is tolerated by the caller
+
     def _currency_code(self, currency_id: str) -> str | None:
         """WiseCP's invoices carry a currency id; ask WiseCP which ISO code that is. None (= held for review) if it cannot say."""
         try:

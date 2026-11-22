@@ -4,6 +4,7 @@
   expire-reservations   release holds that never got an outcome (run every 5 minutes)
   list-keys         show API keys (name, scope, tenants, expiry, revoked); never the secret
   revoke-key NAME   revoke an API key immediately
+  recharge-run      one pass of Add Funds / auto-recharge settlement (the worker also does this every minute)
   set-key-ips NAME --ip 1.2.3.4 [--ip ...] | --any   change the addresses an active key may be used from (--any removes the restriction)
   worker [--once]   process Chatwoot provisioning jobs
   escalate          lock tenants paused longer than SUSPEND_GRACE_DAYS (run daily)
@@ -55,6 +56,7 @@ def main():
     k.add_argument("--days", type=int, default=365); k.add_argument("--key", help="use this exact key text instead of generating one (32+ characters: letters, digits, - and _)")
     rkk = sub.add_parser("rekey"); rkk.add_argument("name"); rkk.add_argument("--key", required=True)
     ski = sub.add_parser("set-key-ips"); ski.add_argument("name"); ski.add_argument("--ip", action="append", default=[]); ski.add_argument("--any", action="store_true")
+    sub.add_parser("recharge-run")
     sub.add_parser("expire-reservations"); sub.add_parser("list-keys"); rk = sub.add_parser("revoke-key"); rk.add_argument("name")
     w = sub.add_parser("worker"); w.add_argument("--once", action="store_true")
     sub.add_parser("escalate"); sub.add_parser("seed-plans")
@@ -435,11 +437,25 @@ def main():
         elif a.cmd == "seed-plans":
             from .services.currencies import seed_currencies
             seed_currencies(db); seed_plans(db); db.commit(); print("currencies and plans ready")
+        elif a.cmd == "recharge-run":
+            from .services import auto_recharge as rch
+            from .services import wisecp as wisecp_svc
+            print(rch.run(db, wisecp_svc.get_wisecp()))
         elif a.cmd == "worker":
             wid = f"worker-{uuid.uuid4().hex[:6]}"
             cw = get_chatwoot()
             print(f"{wid} started; polling for jobs", flush=True)
+            last_recharge = 0.0
             while True:
+                if time.time() - last_recharge >= 60:        # Add Funds / auto-recharge: settle paid invoices, start due recharges
+                    last_recharge = time.time()
+                    try:
+                        from .services import auto_recharge as rch
+                        from .services import wisecp as wisecp_svc
+                        rch.run(db, wisecp_svc.get_wisecp())
+                    except Exception as e:
+                        db.rollback()
+                        print(f"{wid} recharge pass failed: {type(e).__name__}", flush=True)
                 job = jobs.run_once(db, cw, wid)
                 if job is not None:
                     print(f"{wid} ran {job.operation} job {job.id} -> {job.status}", flush=True)   # ids only, never customer data
