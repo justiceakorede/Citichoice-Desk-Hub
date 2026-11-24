@@ -196,7 +196,7 @@ class WisecpClient:
         return inv
 
     def cancel_invoice(self, invoice_id: str) -> None:
-        self._call("PATCH", f"/invoices/{invoice_id}/status", {"status": "cancelled"})      # [UNVERIFIED] path; failure is tolerated by the caller
+        self._call("PUT", f"/invoices/{invoice_id}/status", {"status": "cancelled"})      # path is in WiseCP's permission list; body field [UNVERIFIED]; failure is tolerated by the caller
 
     def _currency_code(self, currency_id: str) -> str | None:
         """WiseCP's invoices carry a currency id; ask WiseCP which ISO code that is. None (= held for review) if it cannot say."""

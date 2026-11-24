@@ -30,8 +30,12 @@ card -> module (use_clientArea_wallet_*) -> hub  -> WiseCP admin API: POST /invo
 ## Setup
 1. Deploy the hub (this release adds migration `0015`; run `alembic upgrade head` or let the container do it). The **worker** container now
    settles invoices every minute and needs WiseCP and mail settings: they are in `docker-compose.yml` already (WISECP_*, SMTP_*, RECHARGE_*).
-2. The WiseCP **admin API key** used by the hub must be allowed to **create invoices** (and to change an invoice's status, used to cancel an
-   unpaid automatic recharge). Today it only reads invoices.
+2. The WiseCP **admin API key** used by the hub needs exactly these permissions (least privilege; nothing else):
+   * Invoices: `GET /admin/invoices/{id}` (top-up checks), `POST /admin/invoices` (Add Funds and auto-recharge invoices),
+     `PUT /admin/invoices/{id}/status` (cancel an unpaid automatic recharge).
+   * Billing: `GET /admin/financial/currencies` (exchange rates, WiseCP currency ids) and `GET /admin/financial/currency-settings` (FX sync).
+   Do NOT enable: client credits (`POST/PATCH/DELETE .../credits`), invoice payments (`POST .../payments`), invoice delete, client or
+   service changes, settings (especially api-credentials), staff, modules. Also keep the key limited to the hub's IP address.
 3. Upload the module (`DeskHub/`) and the theme (`CitichoiceHost/`).
 4. Optional env: `WALLET_PRESETS_JSON` (add the line to the compose `environment:` yourself), `RECHARGE_MIN_USD`, `RECHARGE_MAX_USD`,
    `RECHARGE_MAX_FAILURES`, `RECHARGE_PAY_TIMEOUT_MINUTES`, `RECHARGE_MIN_GAP_MINUTES`, `RECHARGE_DAILY_LIMIT`.
@@ -46,7 +50,8 @@ card -> module (use_clientArea_wallet_*) -> hub  -> WiseCP admin API: POST /invo
    if it stays unpaid, check Automatic Payments, the `Balance` payment method name, and how WiseCP times the payment (the hub waits 30 minutes).
 4. Cancel path: let one recharge go unpaid; it must be cancelled in WiseCP. If WiseCP rejects the cancel call the hub logs it and still
    counts the failure.
-5. Module: check the customer id is found (`client_id()` in `DeskHub.php`) and that `run_module_method('wallet_settings')` returns the card data.
+5. Module: WiseCP only runs a service-page action that is listed in the module's `$client_callable_methods` and has a `handle_` method; the card
+   shows "Invalid request." otherwise. Check the card loads (balance and presets appear) and that the customer id comes from the signed-in session.
 
 ## Rollback
 Switch automatic recharge off per tenant (the card, or `PUT /admin/tenants/{id}/auto-recharge` with `enabled:false`). The old top-up add-on
